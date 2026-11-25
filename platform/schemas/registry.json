@@ -1,0 +1,22 @@
+{
+  "registry_version": "2.0",
+  "description": "Schema Registry（设计文档 §3.1）：登记各记录格式的合法版本。wf 加载层包/记录时校验，未知主版本拒绝。",
+  "formats": {
+    "layer_package": {"versions": ["2.0"], "latest": "2.0", "status": "active"},
+    "test_definition": {"versions": ["2.0"], "latest": "2.0", "status": "active"},
+    "test_run": {"versions": ["2.0"], "latest": "2.0", "status": "active"},
+    "test_result": {"versions": ["2.0"], "latest": "2.0", "status": "active"},
+    "decision_record": {"versions": ["2.0"], "latest": "2.0", "status": "active"},
+    "domain_pack": {"versions": ["2.0"], "latest": "2.0", "status": "active"},
+    "evidence_edge": {"versions": ["2.0"], "latest": "2.0", "status": "active"},
+    "evolution_candidate": {"versions": ["2.0"], "latest": "2.0", "status": "active"},
+    "layer_interface": {"versions": ["1.0"], "latest": "1.0", "status": "active"},
+    "task_record": {"versions": ["1.0", "1.1"], "latest": "1.1", "status": "active"},
+    "workflow_state": {"versions": ["0.1", "0.2", "0.3", "0.4"], "latest": "0.4", "status": "active"}
+  },
+  "compat_notes": {
+    "2.0": "初始版本。向后兼容的次要扩充（如 test_definition.strength 可选字段、decision_record 的 summary/task_id/content_sha、layer_package 的 interface）不升主版本。",
+    "task_record": "1.0 初版；1.1 去掉 kind（任务长什么样只由 flow_template 决定），domain 改为可选的 namespace（旧任务的层包存放位置），success_criteria / budget / tradeoff_policy / stop_rule 不再必填。",
+    "workflow_state": "0.1 初版；0.2 域过滤贯穿 DAG 与待批决策、节点 +title/+dangling_ref、+store_root/store_isolated、evidence_status 的 contradicted_by 改看出边；0.3 新增 tasks（任务→迭代，含 goal、benchmark、逐层自有/沿用），包条目 +task_id/iteration_id，summary +active_iteration/view_packages/hidden_packages/unassigned_packages，默认前沿只看进行中的迭代；0.4 每个层包 +state（唯一的状态词）/+card（接口卡、核对回执、证据、决定回执），每个迭代按模板顺序 +nodes（流程编排里的框）/+complete，任务 +flow_template/+receipts（任务级决定回执）、去掉 kind/domain。"
+  }
+}

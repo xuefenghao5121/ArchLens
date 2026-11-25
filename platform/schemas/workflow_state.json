@@ -1,0 +1,201 @@
+{
+  "$id": "workflow_state",
+  "title": "workflow-state.json（wf state-export 的机器契约，可视化工作流设计文档 §3/§10/§11）",
+  "description": "store 的只读投影，供编排 Agent 与前端消费。domain 过滤贯穿层包、DAG 与待批决策（兼容旧参数；界面上不再有领域）。store_env_hash 覆盖索引、证据图、层包信封与任务记录，用于校验状态是否过期。精简校验器不支持 $ref，层包条目的 schema 放在 _pkg_entry，由 state-export 逐条校验。0.4：每个层包带 state（唯一的状态词）与 card（人读的接口卡、核对回执、证据、决定回执）；每个迭代按模板顺序列出 nodes（流程编排里的框）与 complete；每个任务带 receipts（任务级的决定回执：章程 / 开某一轮 / 封板）。",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "generated_by", "store_env_hash", "store_root", "store_isolated", "summary", "layers", "tasks", "dag", "pending_decisions", "flow_candidates"],
+  "properties": {
+    "schema_version": {"enum": ["0.1", "0.2", "0.3", "0.4"]},
+    "generated_at": {"type": "string"},
+    "generated_by": {"type": "string"},
+    "store_env_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "store_root": {"type": "string"},
+    "store_isolated": {"type": "boolean"},
+    "summary": {
+      "type": "object",
+      "required": ["domain", "total_packages", "layer_counts", "frontier", "archived", "pending_decisions", "consumption_warnings", "view_packages", "hidden_packages", "unassigned_packages", "active_iteration"],
+      "properties": {
+        "domain": {"type": "string"},
+        "total_packages": {"type": "integer"},
+        "layer_counts": {"type": "object"},
+        "frontier": {"type": "string"},
+        "archived": {"type": "integer"},
+        "pending_decisions": {"type": "integer"},
+        "consumption_warnings": {"type": "integer"},
+        "view_packages": {"type": "integer"},
+        "hidden_packages": {"type": "integer"},
+        "unassigned_packages": {"type": "integer"},
+        "active_iteration": {"type": ["string", "null"]}
+      }
+    },
+    "layers": {
+      "type": "object",
+      "required": ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"],
+      "properties": {
+        "L1": {"type": "object"}, "L2": {"type": "object"}, "L3": {"type": "object"},
+        "L4": {"type": "object"}, "L5": {"type": "object"}, "L6": {"type": "object"},
+        "L7": {"type": "object"}, "L8": {"type": "object"}
+      }
+    },
+    "tasks": {
+      "type": "array",
+      "description": "任务 → 迭代。每个迭代带模板顺序的 nodes（框）、逐层的自有包（own）与沿用包（reused）、complete。",
+      "items": {
+        "type": "object",
+        "required": ["task_id", "title", "status", "goal", "benchmarks", "flow_template", "iterations"],
+        "properties": {
+          "task_id": {"type": "string"},
+          "title": {"type": "string"},
+          "flow_template": {"type": "string"},
+          "template_label": {"type": "string"},
+          "status": {"type": "string"},
+          "goal": {"type": "object"},
+          "benchmarks": {"type": "array"},
+          "charter_decision_id": {"type": "string"},
+          "receipts": {
+            "type": "array",
+            "description": "任务级的决定回执（章程 / 开某一轮 / 结束某一轮 / 封板，及批准或驳回它们的记录）；pending=true 的是待人决定的事项",
+            "items": {
+              "type": "object",
+              "required": ["decision_id", "pending", "summary", "by", "at"],
+              "properties": {
+                "decision_id": {"type": "string"},
+                "pending": {"type": "boolean"},
+                "kind": {"type": "string"},
+                "summary": {"type": "string"},
+                "by": {"type": "string"},
+                "at": {"type": "string"},
+                "about": {"type": "string"},
+                "outcome": {"type": "string", "enum": ["批准", "驳回"]}
+              }
+            }
+          },
+          "default_iteration": {"type": ["string", "null"]},
+          "pending_decisions": {"type": "integer"},
+          "iterations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["iteration_id", "seq", "label", "status", "nodes", "layers"],
+              "properties": {
+                "iteration_id": {"type": "string"},
+                "seq": {"type": "integer"},
+                "label": {"type": "string"},
+                "status": {"type": "string"},
+                "title": {"type": "string"},
+                "reason": {"type": "string"},
+                "started_at": {"type": "string"},
+                "flow_template": {"type": "string"},
+                "nodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["layer", "own", "reused", "state"],
+                    "properties": {
+                      "layer": {"type": "string"},
+                      "name": {"type": "string"},
+                      "alias": {"type": "string"},
+                      "own": {"type": "array", "items": {"type": "string"}},
+                      "reused": {"type": "array", "items": {"type": "string"}},
+                      "state": {"type": "string"}
+                    }
+                  }
+                },
+                "complete": {"type": "boolean"},
+                "frontier": {"type": ["string", "null"]},
+                "reached_l8": {"type": "boolean"},
+                "pending_decisions": {"type": "integer"},
+                "layers": {"type": "object"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "dag": {
+      "type": "object",
+      "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "kind", "layer"],
+            "properties": {
+              "id": {"type": "string"},
+              "kind": {"type": "string", "enum": ["layer_package", "test", "run", "result", "decision", "artifact", "evolution", "dangling_ref", "entity"]},
+              "layer": {"type": ["string", "null"]},
+              "title": {"type": "string"}
+            }
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["edge_id", "edge_type", "from", "to"],
+            "properties": {
+              "edge_id": {"type": "string"},
+              "edge_type": {"type": "string"},
+              "from": {"type": "string"},
+              "to": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "pending_decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["decision_id", "package_ids", "decision_type", "rationale"],
+        "properties": {
+          "decision_id": {"type": "string"},
+          "package_ids": {"type": "array", "items": {"type": "string"}},
+          "task_id": {"type": "string"},
+          "decision_type": {"type": "string"},
+          "rationale": {"type": "string"},
+          "summary": {"type": "string"},
+          "headline": {"type": "string"}
+        }
+      }
+    },
+    "flow_candidates": {"type": "array"}
+  },
+  "_pkg_entry": {
+    "type": "object",
+    "required": ["package_id", "title", "layer_name", "owner_agent", "lifecycle", "claim_level", "gate_verdict", "invalidated", "evidence_status", "decision_status", "parent_package_refs", "artifacts", "decision_pending", "task_id", "iteration_id", "state", "card"],
+    "properties": {
+      "package_id": {"type": "string"},
+      "title": {"type": "string"},
+      "layer_name": {"type": "string"},
+      "owner_agent": {"type": "string"},
+      "lifecycle": {"type": "string"},
+      "claim_level": {"type": ["string", "null"]},
+      "gate_verdict": {"type": "string"},
+      "invalidated": {"type": "boolean"},
+      "evidence_status": {"type": "string", "enum": ["valid", "unresolved", "disputed", "invalidated", "none"]},
+      "decision_status": {"type": "string", "enum": ["pending", "resolved", "none"]},
+      "parent_package_refs": {"type": "array", "items": {"type": "string"}},
+      "artifacts": {"type": "array"},
+      "decision_pending": {"type": "boolean"},
+      "task_id": {"type": ["string", "null"]},
+      "iteration_id": {"type": ["string", "null"]},
+      "reused_from": {"type": ["string", "null"]},
+      "state": {"type": "string", "enum": ["未开始", "进行中", "待人决定", "未验证", "有问题", "已验证", "已作废"]},
+      "card": {"type": "object"}
+    }
+  },
+  "_pkg_ref": {
+    "type": "object",
+    "description": "迭代视图里的层包条目（不带 card，完整卡片在 layers[L].packages）",
+    "required": ["package_id", "state", "task_id", "iteration_id"],
+    "properties": {
+      "package_id": {"type": "string"},
+      "task_id": {"type": ["string", "null"]},
+      "iteration_id": {"type": ["string", "null"]},
+      "reused_from": {"type": ["string", "null"]},
+      "state": {"type": "string", "enum": ["未开始", "进行中", "待人决定", "未验证", "有问题", "已验证", "已作废"]}
+    }
+  }
+}

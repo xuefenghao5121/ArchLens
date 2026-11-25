@@ -1,0 +1,29 @@
+{
+  "$id": "test_definition",
+  "title": "测试定义（设计文档 §5.2：定义/运行/结果三分离）",
+  "description": "被检验命题、指标、对照与干预、失败条件。计划通过不代表已执行。",
+  "type": "object",
+  "required": ["test_id", "schema_version", "proposition", "metric", "predicted_direction", "failure_condition", "validity_scope"],
+  "properties": {
+    "test_id": {"type": "string", "pattern": "^TST-[A-Za-z0-9._-]+$"},
+    "schema_version": {"const": "2.0"},
+    "title": {"type": "string"},
+    "layer_id": {"type": "string", "enum": ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"]},
+    "proposition": {"type": "string", "minLength": 1},
+    "metric": {"type": "string", "minLength": 1},
+    "baseline_ref": {"type": "string"},
+    "control": {"type": "string"},
+    "intervention": {"type": "string"},
+    "fixed_variables": {"type": "object"},
+    "predicted_direction": {"type": "string", "minLength": 1},
+    "effect_threshold": {"type": "string"},
+    "failure_condition": {"type": "string", "minLength": 1},
+    "regression_tolerance": {"type": "string"},
+    "coverage_targets": {"type": "object"},
+    "validity_scope": {"type": "string", "minLength": 1},
+    "strength": {"type": "string", "enum": ["V1", "V2", "V3"],
+                 "description": "验证强度（§6.2）：V1 单实现测试；V2 独立参考模型/随机差分；V3 跨实现/故障注入/校准"},
+    "package_ref": {"type": "string", "pattern": "^PKG-[A-Za-z0-9._-]+$"},
+    "created_by": {"type": "string"}
+  }
+}

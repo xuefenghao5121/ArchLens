@@ -1,0 +1,18 @@
+{
+  "$id": "test_result",
+  "title": "测试结果（设计文档 §5.2）",
+  "description": "结论、实测效应、覆盖度、允许支持的结论范围。单次通过不代表覆盖目标满足。",
+  "type": "object",
+  "required": ["result_id", "schema_version", "run_ref", "verdict"],
+  "properties": {
+    "result_id": {"type": "string", "pattern": "^RES-[A-Za-z0-9._-]+$"},
+    "schema_version": {"const": "2.0"},
+    "run_ref": {"type": "string", "pattern": "^RUN-[A-Za-z0-9._-]+$"},
+    "verdict": {"type": "string", "enum": ["pass", "fail", "unresolved", "not_applicable"]},
+    "measured_effect": {"type": "object"},
+    "coverage": {"type": "object"},
+    "failure_reason": {"type": "string"},
+    "supported_conclusion_scope": {"type": "string"},
+    "notes": {"type": "string"}
+  }
+}

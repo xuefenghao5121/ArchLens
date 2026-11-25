@@ -1,0 +1,62 @@
+identity:
+  name: gem5-arm
+  version: v26.0.0.0 + ARM_glm（本地扩展）
+  fingerprint: {git_head: fed0e07e930f, diff_artifact: ART-0244629ea861, build_id: cce1f5efb473}
+capabilities:
+  cycle_accurate: true
+  modes: [se, fs]
+  checkpoint: true
+  functional_ref: false          # 功能裁判请配 qemu-aarch64-user 适配器
+  injection:
+    - scoreboard_hold            # SimObject 记分牌占用（O3 isHeld）
+    - fu_occupancy               # FU opLat/pipelined
+    - timing_suspend             # TimingSimple 挂起
+  cpus: [atomic, timing, o3]
+
+interfaces:
+  build:
+    cmd: "source env/toolchain.sh && cd src/gem5 && scons build/ARM_glm/gem5.opt -j$(nproc)"
+    artifacts: [src/gem5/build/ARM_glm/gem5.opt]
+  run:
+    gem5: src/gem5/build/ARM_glm/gem5.opt
+    se: "--outdir={outdir} configs/example/int4_se.py --binary={binary} --cpu {cpu} {common} {inject}"
+    fs: "--outdir={outdir} configs/example/arm/fs_sme.py --kernel fs/build/linux-6.18.63/vmlinux --cpu atomic --roi-cpu {roi_cpu} --release Armv93 --rdinit {rdinit} {inject}"
+    env: {M5_PATH: fs/dist}
+    common_se: ["--caches 1"]    # o3 必带（无 caches 的 snoop panic 已知缺陷）
+    timeout_hint_s: 600
+  stats:
+    window: {se: system.cpu.numCycles, fs: system.roi_cpu.numCycles}
+    parse: "^(?P<key>system[.\w]+)\s+(?P<val>-?\d+)"
+    counters: [system.attn.cmds, system.attn.beats, system.attn.tail_ticks,
+               system.attn.class_cmds, system.zpath.luti_cmds, system.cpu.numCycles,
+               simInsts]
+  guard:
+    # 护栏=仿真器无关正确性锚：退出码期望值由领域包 benchmarks 表提供
+    pattern: "m5_fail instruction encountered code (?P<code>-?\\d+)"
+    log_files: [simout, run.log, console]
+    fs_caveat: "浮点负载绝对校验和受 CPU 切换扰动（在册），FS 判据用运行干净+周期/计数一致性"
+  inject:
+    semantics_ref: domains/sme2/contracts/injection.md
+    params:
+      zpath: {flag: --zpath, type: int, enum: [0,1],  note: rtlZpath 查表注入（窄口）}
+      luti_wide: {flag: --luti-wide, type: int, enum: [0,1], note: 宽口查表（IF-1 契约形态）}
+      luti_wide_lat: {flag: --luti-wide-lat, type: int, default: 2}
+      attn: {flag: --attn, type: int, enum: [0,1], note: rtlAttn 三资源注入}
+      fmopa_banks:{flag: --fmopa-banks, type: int, note: K 独立累加位组（0=旧行为）}
+      fmopa_lat:  {flag: --fmopa-lat, type: int, default: 2}
+      fmopa_pv: {flag: --fmopa-pv, type: int, enum: [0,1], note: PV 秩-1 形态建模}
+      max_prereduce: {flag: --max-prereduce, type: int, enum: [0,4,8,16], note: max 预归约（采纳方案）}
+      stream_issue: {flag: --stream-issue, type: int, enum: [1,2]}
+      stream_fmla_lat: {flag: --stream-fmla-lat, type: int}
+      stream_fdiv_lat: {flag: --stream-fdiv-lat, type: int}
+      stream_faddv_lat:{flag: --stream-faddv-lat, type: int}
+      stream_fmaxv_lat:{flag: --stream-fmaxv-lat, type: int}
+      stream_fsub_lat: {flag: --stream-fsub-lat, type: int}
+      stream_fmul_lat: {flag: --stream-fmul-lat, type: int}
+      stream_cvt_lat:  {flag: --stream-cvt-lat, type: int}
+      stream_expa_lat: {flag: --stream-expa-lat, type: int}
+      caches: {flag: --caches, type: int, enum: [0,1]}
+      cpu:        {flag: --cpu, type: str, enum: [atomic, timing, o3]}
+    presets:                    # 常用帧（与 L7 在册锚点一致）
+      s_frame:  {cpu: o3, caches: true, zpath: true, luti_wide: true, attn: true, fmopa_banks: 4}
+      p5_frame: {preset: s_frame, stream_fmla_lat: 1, stream_fmaxv_lat: 1, stream_issue: 2}

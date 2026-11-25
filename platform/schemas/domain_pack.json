@@ -1,0 +1,95 @@
+{
+  "$id": "domain_pack",
+  "title": "领域包描述符（设计文档 §3.5/§10）",
+  "description": "具体研究对象所需的 benchmark、指标、假设模板、RTL 单元、适配器与校准证据。通用内核不含领域语义。",
+  "type": "object",
+  "required": ["identity", "description", "benchmarks", "metric_definitions", "rtl_units", "adapters", "calibration", "spec_task_links"],
+  "properties": {
+    "identity": {
+      "type": "object",
+      "required": ["pack_id", "name", "schema_version"],
+      "properties": {
+        "pack_id": {"type": "string", "pattern": "^DOMAIN-[A-Za-z0-9._-]+$"},
+        "name": {"type": "string", "minLength": 1},
+        "schema_version": {"const": "2.0"},
+        "version": {"type": "string"}
+      }
+    },
+    "description": {"type": "string", "minLength": 1},
+    "benchmarks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "kind": {"type": "string"},
+          "artifact_refs": {"type": "array", "items": {"type": "string"}},
+          "layer_refs": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "metric_definitions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "definition"],
+        "properties": {
+          "name": {"type": "string"},
+          "definition": {"type": "string", "minLength": 1},
+          "unit": {"type": "string"},
+          "source": {"type": "string"}
+        }
+      }
+    },
+    "rtl_units": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "source_artifacts": {"type": "array", "items": {"type": "string"}},
+          "layer_refs": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "adapters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "kind": {"type": "string"},
+          "artifact_refs": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"type": "string", "enum": ["uncalibrated", "partially_calibrated", "calibrated"]},
+        "evidence_refs": {"type": "array", "items": {"type": "string"}},
+        "notes": {"type": "string"}
+      }
+    },
+    "spec_task_links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["task_id"],
+        "properties": {
+          "task_id": {"type": "string"},
+          "package_refs": {"type": "array", "items": {"type": "string"}},
+          "note": {"type": "string"}
+        }
+      }
+    },
+    "layer_ownership": {
+      "type": "object",
+      "description": "层包 → 负责 agent 的映射，供多 agent 协作；键为 package_id 前缀或层号"
+    }
+  }
+}

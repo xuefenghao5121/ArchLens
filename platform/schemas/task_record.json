@@ -1,0 +1,66 @@
+{
+  "$id": "task_record",
+  "title": "任务记录（标题 + 目标不变量 + benchmark + 流程模板；迭代是一次 L1→L8 推进）",
+  "description": "每个任务一个文件 tasks/<task_id>.json。任务长什么样、怎样算完成只由 flow_template 决定：没有任务类型，也没有另写的成功判据。goal.statement 是目标原话（不变量），原样显示在每一层。历史章程里的 success_criteria / budget / tradeoff_policy / stop_rule 仅存档。namespace 是旧任务的层包存放位置（「领域」概念已停用，界面上不出现）；新任务统一用默认位置。包归属迭代：迭代里显式列出的 package_ids → 包上的 provenance.iteration_id → 按创建时间落进当时进行中的迭代。",
+  "type": "object",
+  "required": ["task_id", "schema_version", "title", "status", "goal", "benchmarks", "iterations", "flow_template"],
+  "properties": {
+    "task_id": {"type": "string", "pattern": "^TASK-[A-Za-z0-9._-]+$"},
+    "schema_version": {"enum": ["1.0", "1.1"]},
+    "namespace": {"type": "string", "minLength": 1},
+    "domain": {"type": "string"},
+    "kind": {"type": "string"},
+    "title": {"type": "string", "minLength": 1},
+    "flow_template": {"type": "string", "minLength": 1},
+    "status": {"type": "string", "enum": ["draft", "active", "sealed", "aborted"]},
+    "goal": {
+      "type": "object",
+      "required": ["statement"],
+      "properties": {
+        "statement": {"type": "string", "minLength": 1},
+        "success_criteria": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "budget": {"type": "string"},
+        "tradeoff_policy": {"type": "string"},
+        "stop_rule": {"type": "string"}
+      }
+    },
+    "benchmarks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "kind": {"type": "string"},
+          "artifact_refs": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "charter_decision_id": {"type": "string"},
+    "iterations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["iteration_id", "seq", "label", "status", "started_at"],
+        "properties": {
+          "iteration_id": {"type": "string", "pattern": "^ITER-[A-Za-z0-9._-]+$"},
+          "seq": {"type": "integer"},
+          "label": {"type": "string", "minLength": 1},
+          "status": {"type": "string", "enum": ["draft", "active", "sealed", "aborted"]},
+          "title": {"type": "string"},
+          "reason": {"type": "string"},
+          "started_at": {"type": "string"},
+          "entry_decision_id": {"type": "string"},
+          "package_ids": {"type": "array", "items": {"type": "string"}},
+          "flow_template": {"type": "string"},
+          "created_at": {"type": "string"},
+          "created_by": {"type": "string"}
+        }
+      }
+    },
+    "created_at": {"type": "string"},
+    "created_by": {"type": "string"},
+    "updated_at": {"type": "string"},
+    "note": {"type": "string"}
+  }
+}

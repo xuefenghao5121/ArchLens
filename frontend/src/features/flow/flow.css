@@ -1,0 +1,72 @@
+/* 流程编排：任务目标 → 一串可点的框 → 本轮进度与收尾 */
+
+.flowp { max-width: 1400px; }
+
+.flow-legend {
+  color: var(--muted); font-size: 13px; line-height: 1.7;
+  margin: 0 0 12px; padding-left: 12px; border-left: 2px solid var(--line);
+}
+
+.flow-goal { margin-bottom: 12px; }
+.flow-goal-text { font-size: 16px; line-height: 1.6; margin-top: 4px; }
+.flow-meta { display: flex; gap: 16px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+.flow-decisions { margin-bottom: 12px; }
+
+.flow-round { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin: 6px 0 10px; font-size: 14px; }
+.flow-round-label { font-weight: 600; }
+
+/* ---- 一串框：一行最多四个，行内用 → ，换行用 ↓ ---- */
+.fchain { display: flex; flex-direction: column; }
+.fbreak { text-align: center; color: var(--muted); font-size: 16px; line-height: 1.2; padding: 4px 0; }
+.frow { display: grid; gap: 26px; }
+.fcell { position: relative; min-width: 0; }
+.farrow {
+  position: absolute; left: -21px; top: 50%; transform: translateY(-50%);
+  color: var(--muted); font-size: 16px; width: 16px; text-align: center;
+}
+
+.fnode {
+  height: 100%; min-height: 132px;
+  background: var(--panel); border: 1px solid var(--line); border-left-width: 4px; border-radius: 10px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+  border-left-color: var(--line);
+}
+.fnode[data-state='未开始'] { border-left-color: #9a9aab; }
+.fnode[data-state='进行中'] { border-left-color: #60a5fa; }
+.fnode[data-state='待人决定'] { border-left-color: #fbbf24; }
+.fnode[data-state='未验证'] { border-left-color: #fb923c; }
+.fnode[data-state='有问题'] { border-left-color: #f87171; }
+.fnode[data-state='已验证'] { border-left-color: #34d399; }
+.fnode[data-state='已作废'] { border-left-color: #64748b; }
+/* 框里只有沿用上一轮的包，或还没有层包：虚线 */
+.fnode.has-reuse:not(.one), .fnode.empty { border-style: dashed; border-left-style: solid; }
+.fnode.empty { background: transparent; }
+
+.fnode-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.fnode-layer { font-weight: 700; font-size: 14px; }
+.fnode-q { color: var(--muted); font-size: 12px; line-height: 1.5; min-height: 36px; }
+.fnode-link { display: flex; flex-direction: column; gap: 4px; flex: 1; color: var(--text); }
+.fnode-link:hover { text-decoration: none; }
+.fnode.one:hover { border-color: var(--accent); }
+.fnode-give {
+  font-size: 13px; line-height: 1.55; flex: 1;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.fnode-why { color: var(--muted); font-size: 11px; line-height: 1.5; }
+.fnode-new { color: var(--accent); font-size: 13px; flex: 1; display: flex; align-items: center; }
+.fnode-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.fnode-list li { border-top: 1px solid var(--line); padding-top: 6px; }
+.fnode-list li:first-child { border-top: none; padding-top: 0; }
+.fnode-list a { color: var(--text); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.fnode-item { font-size: 13px; line-height: 1.5; min-width: 0; flex: 1; }
+.fnode-reuse { color: var(--muted); font-size: 11px; border: 1px solid var(--line); border-radius: 8px; padding: 0 6px; white-space: nowrap; }
+
+/* ---- 本轮进度与收尾 ---- */
+.flow-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  margin-top: 14px; padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+}
+.flow-progress { font-size: 14px; }
+.flow-progress[data-complete='true'] { color: var(--success); font-weight: 600; }
+.flow-stuck { margin: 4px 2px 0; }

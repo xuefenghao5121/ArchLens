@@ -1,0 +1,58 @@
+/* 层详情：从流程编排点进来。目标 · 交付 · 证据 · 人的决定 四栏 + 核对回执 + 原始记录 */
+
+.ld { max-width: 1500px; }
+.ld-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.back { font-size: 13px; color: var(--muted); }
+.back:hover { color: var(--accent); text-decoration: none; }
+
+.ld-head { margin-bottom: 14px; }
+.ld-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ld-layer { font-size: 22px; font-weight: 700; }
+.ld-title h1 { font-size: 15px; font-weight: 500; color: var(--text); margin: 0; }
+.ld-why { font-size: 14px; margin-top: 6px; line-height: 1.6; }
+.ld-meta { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+/* ---- 四栏：左=目标与这一层是什么，中=交付与人的决定，右=证据 ---- */
+.ld-grid {
+  display: grid; gap: 12px; margin-bottom: 12px;
+  grid-template-columns: minmax(250px, 1fr) minmax(380px, 1.8fr) minmax(270px, 1.1fr);
+  grid-template-areas: "goal out ev" "goal dec ev";
+  align-items: start;
+}
+@media (max-width: 1100px) {
+  .ld-grid { grid-template-columns: 1fr; grid-template-areas: "goal" "out" "dec" "ev"; }
+}
+.ld-goal { grid-area: goal; }
+.ld-out { grid-area: out; }
+.ld-ev { grid-area: ev; }
+.ld-dec { grid-area: dec; }
+
+.goal-text { font-size: 15px; line-height: 1.65; }
+.guide { display: flex; flex-direction: column; gap: 2px; font-size: 13px; line-height: 1.65; }
+.guide-k { color: var(--muted); }
+
+.take { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; font-size: 12px; padding: 2px 0; }
+.take a { color: var(--accent); }
+
+.give-ev { margin-top: 2px; display: flex; flex-direction: column; gap: 1px; }
+.give-ev-item { color: var(--muted); font-size: 12px; }
+.give-ev-item::before { content: '↳ '; }
+
+/* ---- 核对回执：五行人话 ---- */
+.checks { display: flex; flex-direction: column; gap: 2px; }
+.check { display: flex; gap: 10px; align-items: baseline; font-size: 13px; line-height: 1.65; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.check:last-child { border-bottom: none; }
+.check-mark { width: 14px; text-align: center; flex-shrink: 0; font-weight: 700; }
+.check-mark.ok { color: var(--success); }
+.check-mark.bad { color: var(--danger); }
+.check-mark.na { color: var(--muted); }
+.check-label { color: var(--muted); flex-shrink: 0; min-width: 72px; }
+
+/* ---- 原始记录（默认折叠） ---- */
+.raw { margin-top: 12px; }
+.raw summary { cursor: pointer; color: var(--muted); font-size: 13px; user-select: none; padding: 8px 0; }
+.raw pre { margin: 8px 0 0; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; font-size: 11px; line-height: 1.55; overflow: auto; max-height: 520px; color: var(--text); }
+.raw-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
+.raw-cols h4 { margin: 10px 0 0; font-size: 12px; color: var(--text); font-weight: 600; }
+
+.brief { margin: 8px 0 0; padding: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 520px; overflow: auto; color: var(--text); }

@@ -1,0 +1,30 @@
+.evo { max-width: 1200px; }
+.evo h1 { font-size: 24px; margin: 0 0 4px; }
+.evo-sub { color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+
+.metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 24px; }
+.metric { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+.m-k { color: var(--muted); font-size: 12px; }
+.m-v { font-size: 24px; font-weight: 700; margin-top: 6px; }
+
+.evo-list { display: flex; flex-direction: column; gap: 10px; }
+.evo-card { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid; border-radius: 10px; padding: 14px 16px; }
+.evo-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.evo-status { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; }
+.evo-comp { color: var(--accent); font-size: 13px; }
+.evo-type { font-size: 11px; color: var(--muted); }
+.evo-change { margin-top: 8px; font-size: 14px; }
+.evo-benefit { margin-top: 4px; font-size: 12px; color: var(--muted); }
+.evo-metrics { margin-top: 8px; font-size: 11px; color: var(--muted); line-height: 1.6; }
+.evo-cmd { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.evo-cmd code { color: var(--success); }
+.evo-lineage { margin-top: 8px; font-size: 12px; color: var(--muted); display: flex; gap: 16px; flex-wrap: wrap; }
+.evo-lineage code, .evo-lineage { font-family: var(--font-mono); }
+.evo-table { margin-top: 8px; border-collapse: collapse; font-size: 12px; }
+.evo-table th, .evo-table td { border: 1px solid var(--line); padding: 4px 12px; text-align: left; }
+.evo-table th { color: var(--muted); font-weight: 500; }
+.evo-table td:first-child { color: var(--muted); }
+.evo-table td:not(:first-child) { font-family: var(--font-mono); color: var(--text); }
+
+.page-load, .page-err { padding: 40px; color: var(--muted); }
+.page-err { color: var(--danger); }

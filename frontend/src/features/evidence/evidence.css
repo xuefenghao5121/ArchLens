@@ -1,0 +1,20 @@
+/* 证据与回溯：按迭代、按流程顺序从上往下读。没有图，没有节点类型。 */
+
+.evp { max-width: 1200px; }
+.ev-intro { color: var(--muted); font-size: 13px; line-height: 1.7; margin: 0 0 12px; padding-left: 12px; border-left: 2px solid var(--line); }
+
+.ev-chain { display: flex; flex-direction: column; }
+.evb-down { text-align: center; color: var(--muted); font-size: 12px; padding: 5px 0; }
+
+.evb { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; }
+.evb-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 6px; }
+.evb-layer { font-weight: 700; font-size: 15px; }
+
+.evb-pkg { display: flex; flex-direction: column; gap: 2px; }
+.evb-pkg + .evb-pkg { border-top: 1px dashed var(--line); margin-top: 10px; padding-top: 10px; }
+.evb-pkg-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+
+.evb-trace { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; font-size: 12px; padding: 4px 0 2px; }
+.evb-up { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); border: 1px solid var(--line); border-radius: 8px; padding: 1px 8px; }
+.evb-up:hover { border-color: var(--accent); text-decoration: none; }
+.evb-more { font-size: 12px; margin-top: 8px; align-self: flex-start; }

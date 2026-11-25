@@ -1,0 +1,19 @@
+{
+  "$id": "evidence_edge",
+  "title": "证据 DAG 边（设计文档 §5.4）",
+  "description": "graph.jsonl 的行形状。追加式，不可改写历史；from/to 为已注册节点 ID（PKG-/ART-/DEC-/TST-/RUN-/RES-/DOMAIN-）。",
+  "type": "object",
+  "required": ["edge_id", "edge_type", "from", "to", "created_at"],
+  "properties": {
+    "edge_id": {"type": "string", "pattern": "^EDGE-[A-Za-z0-9._-]+$"},
+    "edge_type": {
+      "type": "string",
+      "enum": ["derived_from", "generated_from", "validated_by", "decided_by", "depends_on", "invalidated_by", "contradicted_by", "supersedes"]
+    },
+    "from": {"type": "string", "minLength": 4},
+    "to": {"type": "string", "minLength": 4},
+    "created_at": {"type": "string"},
+    "agent": {"type": "string"},
+    "note": {"type": "string"}
+  }
+}

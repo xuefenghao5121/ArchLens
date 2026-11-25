@@ -1,0 +1,22 @@
+{
+  "$id": "test_run",
+  "title": "测试运行（设计文档 §5.2）",
+  "description": "一次实际执行：绑定工件/环境哈希、执行器、种子、日志引用。",
+  "type": "object",
+  "required": ["run_id", "schema_version", "test_ref", "run_status", "environment_hash", "started_at"],
+  "properties": {
+    "run_id": {"type": "string", "pattern": "^RUN-[A-Za-z0-9._-]+$"},
+    "schema_version": {"const": "2.0"},
+    "test_ref": {"type": "string", "pattern": "^TST-[A-Za-z0-9._-]+$"},
+    "run_status": {"type": "string", "enum": ["completed", "aborted", "running"]},
+    "environment_hash": {"type": "string", "minLength": 8},
+    "executor": {"type": "string"},
+    "started_at": {"type": "string"},
+    "random_seed": {"type": "string"},
+    "log_artifact": {"type": "string", "pattern": "^ART-[A-Za-z0-9._-]+$"},
+    "raw_result_artifact": {"type": "string", "pattern": "^ART-[A-Za-z0-9._-]+$"},
+    "artifact_hashes": {"type": "object"},
+    "parameters": {"type": "object"},
+    "package_ref": {"type": "string", "pattern": "^PKG-[A-Za-z0-9._-]+$"}
+  }
+}

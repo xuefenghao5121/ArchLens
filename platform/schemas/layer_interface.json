@@ -1,0 +1,49 @@
+{
+  "$id": "layer_interface",
+  "title": "层接口卡：层间传递信息的唯一格式（wf guide 可打印骨架）",
+  "description": "每个层包交给下游的内容，五个字段、全部限长。gives 每条带真值（observed 实测 / deduced 推断 / assumed 拍定）、可选的基架（F0-F3）与证据（登记在册的 RES- 测试结果、ART- 工件）。标「实测」的结论必须指向登记在册且结论为通过的测试结果。上游没验证完，下游不能通过。",
+  "type": "object",
+  "required": ["question", "gives"],
+  "properties": {
+    "question": {"type": "string", "minLength": 1},
+    "takes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "statement"],
+        "properties": {
+          "from": {"type": "string", "pattern": "^PKG-[A-Za-z0-9._-]+$"},
+          "statement": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "gives": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "text", "truth"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^S[1-9][0-9]*$"},
+          "text": {"type": "string", "minLength": 1},
+          "truth": {"type": "string", "enum": ["observed", "deduced", "assumed"]},
+          "frame": {"type": "string", "enum": ["F0", "F1", "F2", "F3"]},
+          "evidence": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "open": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["question", "ask"],
+        "properties": {
+          "question": {"type": "string", "minLength": 1},
+          "ask": {"type": "string", "enum": ["human", "next"]},
+          "options": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "limits": {"type": "array", "items": {"type": "string", "minLength": 1}}
+  }
+}

@@ -1,0 +1,37 @@
+/* 研究总览：等你决定 → 任务清单（目标原话、流程、各轮进展、任务级的决定回执） */
+
+.dash { max-width: 1300px; }
+
+.pend {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  padding: 8px 10px; border-radius: 6px; color: var(--text); font-size: 13px;
+  border-left: 3px solid var(--warning); background: var(--raised); margin-bottom: 4px;
+}
+.pend:hover { text-decoration: none; background: var(--panel); }
+.pend-where { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+.pend-text { flex: 1; min-width: 200px; }
+.pend-go { color: var(--accent); font-size: 12px; flex-shrink: 0; }
+
+.tlist { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 12px; }
+.tcard {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; min-width: 0;
+}
+.tcard-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tcard-title { font-weight: 600; font-size: 15px; }
+.tcard-head .tf-link { margin-left: auto; }
+/* 目标原话最多三行 */
+.tcard-goal {
+  font-size: 13px; line-height: 1.6;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.tcard-meta { color: var(--muted); font-size: 12px; display: flex; gap: 14px; flex-wrap: wrap; }
+.tcard-iters { display: flex; gap: 6px; flex-wrap: wrap; }
+.ichip { font-size: 12px; padding: 1px 8px; border-radius: 9px; border: 1px solid; color: var(--text); white-space: nowrap; }
+.ichip:hover { text-decoration: none; filter: brightness(1.2); }
+.tcard-receipts summary { cursor: pointer; color: var(--muted); font-size: 12px; user-select: none; }
+.tcard-receipts[open] summary { margin-bottom: 6px; }
+
+.ended { margin-top: 12px; }
+.ended summary { cursor: pointer; color: var(--muted); font-size: 13px; user-select: none; padding: 6px 0; }
+.ended .tlist { margin-top: 8px; opacity: .85; }

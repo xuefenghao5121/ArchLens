@@ -1,0 +1,76 @@
+/* 任务 / 迭代：选择器、新建任务表单、带理由的操作表单；以及各页共用的按钮 */
+
+/* ---- 任务 → 迭代 选择器 ---- */
+.wp { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.wp label { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+.wp select {
+  max-width: 420px;
+  background: var(--raised); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 10px; font-size: 13px;
+}
+.wp select:disabled { opacity: .55; }
+.wp-status { font-size: 12px; padding: 3px 10px; border-radius: 12px; border: 1px solid var(--muted); white-space: nowrap; }
+.wp .tf-btn { margin-left: auto; }
+
+/* ---- 通用按钮 ---- */
+.tf-btn {
+  padding: 6px 14px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--raised); color: var(--text); cursor: pointer; font-size: 13px;
+  white-space: nowrap;
+}
+.tf-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.tf-btn.primary { background: var(--accent); color: #0b0f14; border-color: var(--accent); font-weight: 600; }
+.tf-btn.primary:hover:not(:disabled) { color: #0b0f14; filter: brightness(1.1); }
+.tf-btn.danger { color: var(--danger); border-color: var(--danger); }
+.tf-btn.danger:hover:not(:disabled) { color: var(--danger); filter: brightness(1.15); }
+.tf-btn.mini { padding: 2px 10px; font-size: 12px; }
+.tf-btn:disabled { opacity: .5; cursor: not-allowed; }
+.tf-link { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 12px; padding: 0; }
+.tf-link.muted { color: var(--muted); }
+
+/* ---- 新建任务（模态） ---- */
+.modal-mask {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0, 0, 0, .6);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 32px 16px; overflow: auto;
+}
+.task-form {
+  width: 640px; max-width: 100%;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 20px 24px 24px;
+}
+.tf-head { display: flex; align-items: center; justify-content: space-between; }
+.tf-head h2 { margin: 0; font-size: 20px; }
+.tf-close { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 13px; }
+.tf-close:hover { color: var(--text); }
+.tf-sub { color: var(--muted); font-size: 12px; margin: 6px 0 16px; line-height: 1.6; }
+
+.tf-row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 13px; }
+.tf-row > span { color: var(--muted); min-width: 92px; flex-shrink: 0; }
+.tf-row input, .tf-row select, .tf-row textarea {
+  flex: 1; background: var(--raised); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 10px; font-size: 13px; font-family: var(--font-sans); min-width: 0;
+}
+.tf-row textarea { resize: vertical; line-height: 1.5; }
+.tf-row.tf-block { align-items: flex-start; }
+.tf-row.tf-block > span { padding-top: 6px; }
+.tf-help { color: var(--muted); font-size: 12px; margin: -6px 0 10px 102px; line-height: 1.6; }
+
+.tf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.tf-grid label, .tf-import > label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.tf-grid input, .tf-import input, .tf-import textarea {
+  background: var(--raised); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 10px; font-size: 13px; font-family: var(--font-sans);
+}
+
+.tf-bench { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; background: var(--raised); }
+.tf-bench-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 13px; }
+.tf-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text); margin: 5px 0; cursor: pointer; flex-wrap: wrap; }
+.tf-bench-name { font-family: var(--font-mono); color: var(--accent); }
+.tf-bench-kind { color: var(--muted); }
+.tf-bench-art { color: var(--muted); font-size: 11px; }
+.tf-hint { color: var(--muted); font-size: 12px; }
+.tf-import { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.tf-result { margin-top: 6px; font-size: 12px; color: var(--text); }
+.tf-foot { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }

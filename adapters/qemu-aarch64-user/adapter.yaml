@@ -1,0 +1,20 @@
+identity:
+  name: qemu-aarch64-user
+  version: 11.1.3 linux-user（fs/build/qemu-11.1.3/build-user）
+capabilities:
+  cycle_accurate: false
+  modes: [user]
+  checkpoint: false
+  functional_ref: true          # 本适配器的定位：功能裁判（数值正确性，无周期）
+  injection: []                 # 无注入能力——L4 契约期即暴露，实验形态须走 gem5 适配器
+interfaces:
+  run:
+    cmd: "fs/build/qemu-11.1.3/build-user/qemu-aarch64 {binary}"
+    timeout_hint_s: 120
+  stats:
+    available: [exit_code, elapsed_s]   # 无周期统计
+  guard:
+    # 护栏=仿真器无关正确性锚：本域用户态程序把校验和以 8 字节小端写在 stdout 开头
+    type: stdout_le64
+    offset: 0
+    expected_from: domains/<name>/benchmarks/GUARDS.md

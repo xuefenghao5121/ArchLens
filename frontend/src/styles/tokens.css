@@ -1,0 +1,42 @@
+/* 视觉令牌：对齐《通用微架构混合仿真 Agent 前端设计文档》§8.2
+   注意：CSS 没有 // 注释——那会把下一行的 :root 一起并进非法选择器，整块令牌被丢弃 */
+:root {
+  --bg: #050810;
+  --panel: #0c1220;
+  --raised: #111a2b;
+  --line: #1a2540;
+  --accent: #22d3ee;
+  --action: #0064e6;
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #f87171;
+  --text: #e0e0e0;
+  --muted: #9a9aab;
+
+  --font-sans: 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code, .mono { font-family: var(--font-mono); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; }
+::-webkit-scrollbar-track { background: transparent; }

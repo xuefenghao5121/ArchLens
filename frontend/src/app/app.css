@@ -1,0 +1,135 @@
+.shell {
+  display: flex;
+  height: 100vh;
+}
+
+.sidebar {
+  width: 232px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+}
+
+.brand {
+  padding: 18px 16px;
+  font-size: 16px;
+  font-weight: 700;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.brand-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent);
+}
+.brand-sub {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted);
+  margin-top: 2px;
+  width: 100%;
+}
+
+.nav {
+  flex: 1;
+  padding: 12px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-item {
+  padding: 9px 12px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 14px;
+  transition: background 0.15s, color 0.15s;
+}
+.nav-item:hover {
+  background: var(--raised);
+  color: var(--text);
+  text-decoration: none;
+}
+.nav-item.active {
+  background: var(--raised);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.sidebar-foot {
+  padding: 14px 16px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.env-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.topbar {
+  height: 68px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+}
+.topbar-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+/* 操作人 / 署名：顶栏一个输入框，各页共用 */
+.topbar-agent {
+  display: flex; align-items: center; gap: 8px; margin-left: auto;
+  color: var(--muted); font-size: 12px;
+}
+.topbar-agent input {
+  width: 160px;
+  background: var(--raised); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 10px; font-size: 13px; font-family: var(--font-sans);
+}
+.topbar-agent input:focus { outline: none; border-color: var(--accent); }
+.topbar-env {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: var(--raised);
+  color: var(--success);
+  border: 1px solid var(--success);
+  font-family: var(--font-mono);
+}
+/* 连着真实 store：徽章用警示色，和隔离副本一眼区分 */
+.topbar-env.real {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.content {
+  flex: 1;
+  overflow: auto;
+  padding: 24px;
+}

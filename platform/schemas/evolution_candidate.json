@@ -1,0 +1,26 @@
+{
+  "$id": "evolution_candidate",
+  "title": "演进候选（设计文档 v2.2 §11.3）",
+  "description": "RSI 候选变更：记录父版本、变更差异、预期收益、影响范围与评测计划。追加式存储，同一 candidate_id 以后写的记录为准。状态机：draft/evaluating --evo-eval promote--> challenger --evo-promote--> champion --evo-rollback--> rolled_back（被取代者 superseded）。",
+  "type": "object",
+  "required": ["candidate_id", "schema_version", "target_component", "change_type", "change_set", "generated_by", "status", "created_at"],
+  "properties": {
+    "candidate_id": {"type": "string", "pattern": "^EVO-[A-Za-z0-9._-]+$"},
+    "schema_version": {"const": "2.0"},
+    "target_component": {"type": "string", "minLength": 1},
+    "parent_version": {"type": "string"},
+    "change_type": {"type": "string", "enum": ["behavior_policy", "flow_template", "tool_adapter", "validation", "eval_route", "orchestrator"]},
+    "change_set": {"type": "string", "minLength": 1},
+    "expected_benefit": {"type": "string"},
+    "motivation_refs": {"type": "array", "items": {"type": "string"}},
+    "affected_scopes": {"type": "array", "items": {"type": "string"}},
+    "evaluation_plan_ref": {"type": "string"},
+    "generated_by": {"type": "string", "enum": ["agent", "human"]},
+    "agent": {"type": "string"},
+    "status": {"type": "string", "enum": ["draft", "evaluating", "challenger", "champion", "rejected", "superseded", "rolled_back"]},
+    "created_at": {"type": "string"},
+    "eval_verdict": {"type": ["string", "null"], "enum": ["promote", "reject", "keep", null]},
+    "champion_metrics": {"type": ["object", "array", "number", "string", "null"]},
+    "challenger_metrics": {"type": ["object", "array", "number", "string", "null"]}
+  }
+}

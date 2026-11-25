@@ -1,0 +1,41 @@
+# 不进公开仓库的东西。
+# 这个仓库只发布平台本体；研究数据、第三方仿真器源码和大体量资产都留在本地。
+
+# ---- 研究数据与体积大的资产 ----
+# 层包、任务、证据存储：属于具体研究过程与结论，未随平台发布
+/domains/
+/tasks/
+/platform/store/
+# 进展日志与个人学习路线：含研究结论与内部定位
+/SPEC.md
+/LEARNING.md
+# 复盘里引用了具体研究数字
+/platform/lessons/
+/platform/RELEASE-v2.md
+# 第三方仿真器源码、负载、题集、工具链、交付物、实验现场
+/src/
+/fs/
+/missions/
+/benchmarks/
+/toolchain/
+/deliverables/
+/work_a/
+/designs/
+/own_tb_agentic/
+/sim_build/
+
+# ---- 构建产物与缓存 ----
+node_modules/
+__pycache__/
+*.py[cod]
+*.tsbuildinfo
+/frontend/dist/
+/frontend/.vite/
+
+# ---- 本机运行时状态 ----
+# 界面写操作的幂等键记录（本机使用痕迹）
+/platform/viz/idempotency.jsonl
+*.log
+
+# ---- 会话、备份与计划 ----
+.zcode/

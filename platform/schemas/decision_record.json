@@ -1,0 +1,25 @@
+{
+  "$id": "decision_record",
+  "title": "结构化决策记录（设计文档 §2.4）",
+  "description": "人类/agent 决策必须引用证据 ID。reviewer=pending-user 表示尚待人类批准，高权重层 gate 将报 needs_decision。summary 是一句话结论（≤80 字，wf decide 必填），rationale 是详细依据。task_id 给出时决策挂在任务上（章程 / 开迭代 / 封板），不挂层包。content_sha 是做决定时层包接口卡的内容指纹：内容在其后改过，这张回执就显示过期。",
+  "type": "object",
+  "required": ["decision_id", "schema_version", "decision_type", "rationale", "confidence", "reviewer", "decided_at"],
+  "properties": {
+    "decision_id": {"type": "string", "pattern": "^DEC-[A-Za-z0-9._-]+$"},
+    "schema_version": {"const": "2.0"},
+    "decision_type": {"type": "string", "enum": ["select", "reject", "override", "ratify", "defer"]},
+    "summary": {"type": "string"},
+    "content_sha": {"type": "string"},
+    "task_id": {"type": "string", "pattern": "^TASK-[A-Za-z0-9._-]+$"},
+    "selected_refs": {"type": "array", "items": {"type": "string"}},
+    "rejected_refs": {"type": "array", "items": {"type": "string"}},
+    "constraints": {"type": "array", "items": {"type": "string"}},
+    "rationale": {"type": "string", "minLength": 1},
+    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+    "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+    "reviewer": {"type": "string", "minLength": 1},
+    "decided_at": {"type": "string"},
+    "scope": {"type": "string"},
+    "dissent": {"type": "string"}
+  }
+}

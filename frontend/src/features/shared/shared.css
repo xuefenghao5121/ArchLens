@@ -1,0 +1,106 @@
+/* 各页共用：状态词、提示条、空状态、决定回执、内联表单 */
+
+/* ---- 状态词：一个词一种颜色，解释在悬浮提示与图例里 ---- */
+.state-chip {
+  display: inline-block;
+  font-size: 12px;
+  line-height: 18px;
+  padding: 0 8px;
+  border-radius: 9px;
+  border: 1px solid;
+  white-space: nowrap;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.state-chip.small { font-size: 11px; line-height: 16px; padding: 0 6px; }
+
+.legend { margin-top: 10px; font-size: 12px; color: var(--muted); }
+.legend summary { cursor: pointer; user-select: none; }
+.legend-list { margin: 8px 0 0; display: flex; flex-direction: column; gap: 4px; }
+.legend-row { display: flex; align-items: baseline; gap: 10px; }
+.legend-row dt { margin: 0; min-width: 76px; }
+.legend-row dd { margin: 0; color: var(--text); font-size: 12px; }
+
+/* ---- 提示条 ---- */
+.notice {
+  border-radius: 8px; padding: 10px 14px; margin: 10px 0; font-size: 13px;
+  border: 1px solid var(--line); background: var(--raised);
+}
+.notice.ok { background: rgba(52,211,153,.08); border-color: var(--success); }
+.notice.err { background: rgba(248,113,113,.08); border-color: var(--danger); color: var(--text); }
+.notice.info { border-color: var(--accent); }
+.notice ul { margin: 6px 0 0; padding-left: 18px; }
+.notice li { margin: 2px 0; }
+.notice .why { color: var(--danger); }
+.notice .soft { color: var(--warning); }
+
+.page-load, .page-err { padding: 40px; color: var(--muted); }
+.page-err { color: var(--danger); }
+
+.empty-state {
+  background: var(--panel); border: 1px dashed var(--line); border-radius: 10px;
+  padding: 28px; text-align: center; color: var(--text);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+.empty-sub { color: var(--muted); font-size: 13px; }
+
+.page-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.page-head h1 { font-size: 24px; margin: 0; }
+.page-head .head-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* ---- 区块：目标 / 交付 / 证据 / 人的决定 四栏 ---- */
+.block { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-width: 0; }
+.block-title { font-size: 12px; color: var(--muted); letter-spacing: .5px; margin-bottom: 8px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.block-title strong { color: var(--text); font-size: 14px; letter-spacing: 0; }
+.block-title .note { color: var(--muted); font-size: 11px; font-weight: 400; }
+.block-k { color: var(--muted); font-size: 11px; margin: 10px 0 2px; }
+.block-k:first-child { margin-top: 0; }
+
+/* ---- 结论列表：一条结论一行，标记在前 ---- */
+.give { display: flex; gap: 8px; align-items: baseline; font-size: 13px; line-height: 1.6; padding: 3px 0; border-bottom: 1px solid var(--line); }
+.give:last-child { border-bottom: none; }
+.give-id { font-family: var(--font-mono); color: var(--accent); flex-shrink: 0; }
+.give-text { flex: 1; min-width: 0; }
+.tags { display: inline-flex; gap: 4px; flex-shrink: 0; flex-wrap: wrap; }
+.tag { font-size: 11px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.tag.observed { color: var(--success); border-color: var(--success); }
+.tag.deduced { color: var(--accent); border-color: var(--accent); }
+.tag.assumed { color: var(--warning); border-color: var(--warning); }
+.give-src { color: var(--muted); font-size: 11px; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.mono { font-family: var(--font-mono); }
+.qa { font-size: 13px; line-height: 1.6; padding: 2px 0; }
+
+/* ---- 决定回执：谁 · 何时 · 决定了什么 ---- */
+.receipts { display: flex; flex-direction: column; gap: 4px; }
+.receipt { font-size: 13px; line-height: 1.6; padding: 6px 8px; border-radius: 6px; background: var(--raised); }
+.receipt.pending { border-left: 3px solid var(--warning); }
+.receipt.signed { border-left: 3px solid var(--line); }
+.receipt.stale { border-left-color: var(--danger); }
+.receipt-by { font-weight: 600; }
+.receipt-at { color: var(--muted); font-size: 12px; margin-right: 6px; }
+.receipt-kind { color: var(--muted); font-size: 12px; margin-right: 6px; }
+.receipt-flags { color: var(--warning); font-size: 12px; margin-left: 6px; }
+.receipt-btns { margin-left: 8px; display: inline-flex; gap: 6px; }
+
+/* ---- 内联表单 ---- */
+.inline-form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); }
+.inline-form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.inline-form input, .inline-form textarea {
+  background: var(--panel); color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 10px; font-size: 13px; font-family: var(--font-sans);
+}
+.inline-form textarea { resize: vertical; line-height: 1.5; }
+.inline-form .form-btns { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.form-error { color: var(--danger); font-size: 12px; }
+.form-hint { color: var(--muted); font-size: 12px; }
+
+/* ---- 证据条目：层详情与证据页共用 ---- */
+.ev-line { font-size: 12px; line-height: 1.6; padding: 5px 0; border-bottom: 1px solid var(--line); word-break: break-all; }
+.ev-k { color: var(--muted); }
+.ev-pass { color: var(--success); }
+.ev-fail { color: var(--danger); }
+.ev-cmd { font-family: var(--font-mono); font-size: 11px; color: var(--text); background: var(--raised); border-radius: 6px; padding: 6px 8px; margin: 2px 0 4px; white-space: pre-wrap; word-break: break-all; }
+.dash-foot { margin-top: 24px; font-size: 11px; color: var(--muted); word-break: break-all; }
+.ev-path { font-size: 11px; opacity: .85; }

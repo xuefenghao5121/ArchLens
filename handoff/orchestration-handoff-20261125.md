@@ -1,0 +1,448 @@
+# 交接文档：仿真平台的按层编排
+
+> 写于：2026-11-25 上午。文中的现状核对于当天 10:58。
+> 作者：zcode-glm（ZCode 会话 sess_29ed8703-420a-4eec-969a-e6d038b88e6c）
+> 交接给：下一个接手的 agent 会话，或者人
+> 事实源：待执行方案是同目录的 `orchestration-plan-20261125.md`；平台事实在 store 与 `SPEC.md`。本文只把它们编排成一篇，自己不立新事实。本文与事实源不一致时，以事实源为准，并请修本文。
+> 格式：照 NDF（`<NDF-Harness>`，版本 1.4.1）给人审的「分层散文」写法。正文是从头读到尾的文章，机器核对用的数字都在文末附录。每个条款标题带一个稳定的 ID，标题下一行写明出处。本仓没有安装 NDF 的索引与图检查工具，这些 ID 只用一段临时脚本核对过两件事：格式合规、互不重复。
+
+## 0. 任务前言
+
+你接手的是一件事的中间状态。用户要平台呈现出详细的编排能力，并让我在两种做法里分析哪种更好。分析做完了，方案写好了，但用户**没有批准执行**，而是让我把方案写到本地，再写这份交接。
+
+所以，平台上什么都没有为这份方案改动过。
+
+你要做的第一件事不是动手，而是把方案的意图、依据和五项假设读给用户，等一句批准。批准之后才从方案的第 0 步开始。
+
+**读这份交接的时候可以动什么**：只读。要改方案，改方案文件，然后重新写这份交接。
+
+**方案获批后的可写范围**：`platform/agents/`、`platform/methodology/`、`platform/schemas/`、`platform/tools/wf.py`、`platform/tools/bind_hosts.py`、`platform/viz/`、`frontend/src/`、`.zcode/agents/`（生成物）、`.agents/skills/` 与 `host-bindings/`（生成物）、各份文档与 `SPEC.md`。
+
+**禁写**：已有的层包、决策、证据图；`<NDF-Harness>`。
+
+## 1. 意图
+
+### 用户要什么 {#HO-I-001}
+> 源：用户 2026-11-25 的两条消息，原话逐字收在方案 ORCH-I-001
+
+用户的原话里有两句是这份交接的出发点：
+
+> 接下来需要呈现出详细的可编排性。
+
+> 把目前的待执行方案写到本地，并且按ndf哲学输出一份handoff交接文档
+
+用户给了两个方案让我比较。方案 1 是每层一个 agent，每层有一份独属于这层职责的 `agent.md` 和它要调用的 skills、tools 包，并且使用者能看到。方案 2 是用 skills 把各层连起来，由一个 agent 统一管理。用户自己点出了两者的区别：方案 1 的难点在层与层之间的记忆和上下文管理，方案 2 是大家共用上下文。
+
+### 我的判断，以及它有多可靠 {#HO-I-002}
+> 源：方案 ORCH-I-002、ORCH-I-003
+
+我推荐方案 1。这是我的判断，用户还没有表态。这个判断里的话分量不一样，分三类：
+
+**文件里写明的事实。**
+
+- 设计文档 v2 的 §2.6 定的是「不共享隐式上下文，但共享显式公共契约」。§3.1 说控制面不参与微架构判断。§3.3 说独立验证面是为了降低「生成者与验证者共享同一误解」的风险。
+- NDF-Harness 自己就是分角色的做法。三个角色分开绑定，各有可写范围；每一跳默认先重置会话；成功只认磁盘上的回执。
+- 11-13 的复盘记录了一次判据错误从 L2b 传到 L7 才被用户发现。
+- 30 个层包里 26 个出自同一个 agent。
+
+**推断。**
+
+- 「共用上下文装不下」是从文件大小推出来的。sme2 迭代 1 的 9 个层包合计约 284 KB，我粗估它是六万到十万 token。这个 token 数没有测过。
+- 「方案 1 更高效」是从上下文规模和上面的事故推出来的，没有两种做法的对比数据。
+
+**没有确立的。**
+
+- 宿主（ZCode）子代理定义的格式。它支持哪些字段、对 tools 的限制是否生效，我都没有核实。这是方案的第 0 步。
+
+## 2. 此刻什么是真的
+
+### 平台现状，每一条都能复核 {#HO-S-001}
+> 源：2026-11-25 10:58 在仓库根目录 `<repo>` 核对；复核命令见本节与附录 A
+
+回归 158 条全过，失败 0 条。跑一次十几秒，它在 `/tmp` 下的副本上跑，不碰真实 store：
+
+```bash
+python3 platform/viz/regress.py
+```
+
+引擎自检 15 项全符合预期：
+
+```bash
+python3 platform/tools/wf.py selftest
+```
+
+方法论源与它的两份镜像一致，没有漂移：
+
+```bash
+python3 platform/tools/bind_hosts.py --check
+```
+
+类型检查零错误。仓库自带的 `tsconfig.json` 带一条 reference，直接查会报 TS6310，要用一份临时的配置，内容在附录 C。
+
+两个服务在跑，都只监听本机回环地址。8899 是后端，连的是真实 store；5173 是前端。
+
+```bash
+ss -ltnp | grep -E ':(8899|5173)'
+curl -s http://127.0.0.1:8899/api/state
+```
+
+后端报告：状态导出是 0.4 版，30 个层包，3 个任务，3 条待人批准。30 个包的状态是 19 个已验证、7 个待人决定、3 个未开始、1 个进行中。
+
+真实 store 没有为了这份方案改过。30 个层包和决策、证据图的最后修改时间都停在 2026-11-19 11:57；任务记录和 benchmark 清单停在 2026-11-24 19:30，那是上一轮迁移留下的。指纹在附录 A。
+
+### 上一轮做成了什么 {#HO-S-002}
+> 源：`VISUAL-WORKFLOW-DESIGN.md` §11；`SPEC.md` 里 2026-11-24 21:00 的条目
+
+上一轮按用户的七点意见重做了层间的信息。层与层之间现在只传一张接口卡：本层要回答的问题、用了上游哪几条、交给下游的几条结论、没解决的问题、适用边界。每条结论标明实测、推断还是拍定。
+
+核对时对新建任务下的层包强制五条规则：接口卡必须成文；标实测的结论必须指向登记在册且通过的测试；上游没验证完，下游不能通过；签字之后内容再改，签字作废；核对通过后接口卡再改，回到未验证。
+
+界面只有一个状态词和五行核对回执。侧栏是研究总览、流程编排、证据与回溯、演进中心；层详情从流程编排点进去。领域、任务类型、成功判据、层级工作台、决策中心都去掉了。
+
+这一轮的细节本文没有重写，在上面两个出处里。
+
+### 现状缺口 {#HO-S-003}
+> 源：方案 ORCH-F-001
+
+平台现在其实是方案 2 的做法，有五处缺口：
+
+- 层与角色的对应、每层的 skills 写死在 `platform/tools/wf.py` 里。角色包只有 3 份，没有声明任何 tools。
+- 30 个层包里 26 个出自同一个 agent（`zcode-glm`），1 个是 `cursor-grok域-design-agent`，3 个为空。这是没有派工的下游症状。
+- 没有派工机制，`.zcode/agents/` 不存在。`wf next` 只打印该哪个角色做，然后由同一个长会话接着做。
+- `rtl-generation-discipline` 这个 skill 没挂到 L5 上。
+- `wf brief` 只打印不落盘，事后查不到某一层开工时拿到了什么。
+
+## 3. 机制：平台怎么组织的
+
+### 四样东西各管一段 {#HO-M-001}
+> 源：`通用微架构混合仿真Agent设计文档_v2.md` §3；`platform/CROSS-PLATFORM-ARCHITECTURE.md` §2
+
+**内核**是 `wf.py`、schemas 和 store。模板定每一轮有哪些框、什么顺序；核对规则定一个框何时算完成；失效和决定怎么留痕也在这里。这些是确定的规则，不依赖任何 agent 的记性。
+
+**方法论源**在 `platform/methodology/*.md`。`bind_hosts.py` 把它们投影成 ZCode 的 skill 和一份通用手册。改内容要改源，再重跑投影器。
+
+**角色包**在 `platform/agents/`，现在三份，按角色分而不是按层分。
+
+**界面**是 store 的只读投影，加上一个受控的写入口。它不立新事实。
+
+层与层之间传的是接口卡。下游 agent 用 `wf brief` 拿到任务目标原话、本层的固定说明、上游的接口卡和接口卡的写法。
+
+### 按什么顺序读 {#HO-M-002}
+> 源：本次交接的读序
+
+1. 本文。
+2. `handoff/orchestration-plan-20261125.md`，方案全文。其中第 1、2 节是要读给用户的部分。
+3. `VISUAL-WORKFLOW-DESIGN.md` 的 §11，上一轮做了什么。
+4. `SPEC.md` 进展日志最上面的三条：2026-11-24 17:30、2026-11-24 21:00，以及指向本文的那一条。
+5. `platform/methodology/layer-discipline.md`，层输出与交接的纪律。接口卡在纪律二下面。
+6. `通用微架构混合仿真Agent设计文档_v2.md` 的 §2.6 和 §3，原则与三个面。
+7. 需要对照 NDF 的做法时：`<NDF-Harness>/skill/ndf-workflow/` 下的 `OVERVIEW.md`、`delegate.md`，以及 `workflow/ndf.workflow.yaml`。
+
+### 东西在哪 {#HO-M-003}
+> 源：2026-11-25 核对的行号
+
+- `platform/tools/wf.py`：流程引擎，4369 行。`LAYER_GUIDE` 在第 1153 行，是每层的固定说明和 skills。`LAYER_AGENT` 在第 2029 行，是层到角色的对应。`cmd_next` 在第 2048 行，是调度输出。`cmd_brief` 在第 2106 行，是工作简报。`layer_card` 生成给人读的卡片。
+- `platform/agents/`：`profiling.md`、`design.md`、`integration.md`。
+- `.agents/skills/`：三个 skill。`flow-layer-discipline` 和 `l3-criteria-guard` 是生成物。
+- `platform/viz/`：`server.py` 是后端，`regress.py` 是回归，`cli_smoke.sh` 是命令行冒烟。
+- `frontend/src/features/`：`flow/` 是流程编排，`layers/` 是层详情，`evidence/` 是证据与回溯，`dashboard/` 是研究总览。
+- `tasks/` 是任务记录，`domains/` 是层包，`platform/store/` 是证据。
+- `.zcode/backups/`：每一轮改动前的原文件。
+
+## 4. 怎么接着做
+
+### 第一步不是动手 {#HO-X-001}
+> 源：方案 ORCH-D-001、ORCH-D-002
+
+**没有用户的批准，不要实施方案的任何一步。**
+
+先把方案的第 1、2 节读给用户：意图与依据、三点修正、五项假设。然后等一句话。用户改了哪条，就改方案文件里对应 ID 的那一条，再重新写这份交接。
+
+用户批准的那一刻，记下方案文件的 sha256。本文写作时它是附录 B 里的值。之后方案文件变了，把改了什么给用户看，再要一次批准。
+
+### 批准之后的顺序 {#HO-X-002}
+> 源：方案 ORCH-S-000 到 ORCH-S-008，每一步的完成条件写在那里
+
+1. ORCH-S-000：先核实宿主子代理定义的格式。这是一道检查点。
+2. ORCH-S-001：每层一个 agent 定义，加一份调度 agent 定义，加工具包清单。
+3. ORCH-S-002：引擎读取定义，接进 guide、卡片、brief、next；给 L5 补上 rtl skill。
+4. ORCH-S-003：尽力拦截，层 agent 不能替人签字。
+5. ORCH-S-004：调度规程写成方法论源并投影；agent 定义投影到 `.zcode/agents/`。
+6. ORCH-S-005：服务端与三个页面的界面。
+7. ORCH-S-006：回归与冒烟用例。
+8. ORCH-S-007：类型检查、浏览器实测、派工冒烟。
+9. ORCH-S-008：文档与收尾。
+
+可以直接拿来用的代码位置，方案收在 ORCH-R-001。
+
+### 如果用户选的是方案 2 {#HO-X-005}
+> 源：方案 ORCH-I-002 的 `level=tbd`；本次会话
+
+方案 2 没有被否掉，它只是不被推荐。用户如果说「走方案 2，一个 agent 用 skills 串起来」，**不要**把方案 1 的步骤套上去，那份方案要重写。
+
+重写时至少要处理这几件事：
+
+- 方案 1 里用来保证可信的三样东西会一齐失效：每层上下文独立、层 agent 不能替人签字、上游没验证就不派下游。方案 2 里同一个上下文既写判据又做裁决，事故复盘的教训（ORCH-I-002 第 3 条）会重新进来。
+- 方案 ORCH-I-003 里列的「方案 1 的代价」，在方案 2 里不再成立；反过来，方案 2 的代价要写成约束：每一步都带着全部历史，上下文满了之后压缩掉什么没人看得到。
+- 能保留的是那些与上下文无关的部分：模板定顺序、核对规则定完成、接口卡、决定回执、`wf brief` 落盘、每层执行记录。它们本来就属于内核，不属于某个 agent 的记性。
+- 方案 1 的第 0 步（核实宿主子代理格式）在方案 2 里不需要；但「一个 agent 管到底」仍需一份能被人读到的编排规程，否则同样是人看不到它为什么走了某一步。
+
+### 怎么向用户汇报 {#HO-X-006}
+> 源：用户偏好（个人 AGENTS.md）；本次会话
+
+用户可能通过微信读你的回复。超过一屏的汇报，MUST 在对话里给一段纯文本摘要，不要用 markdown 表格。附录 E 有一段可以直接用的。
+
+事实与判断要分开写：哪个是文件里写明的，哪个是推出来的，哪个没测过。这个平台的用户对这三者的区分很敏感，过去正是因为把推断当成结论，才出了 11-13 那次事故。
+
+### 怎样算做完 {#HO-X-003}
+> 源：方案 ORCH-V-001
+
+agent 说做完了不算。下面每一条都要有落盘的结果：
+
+1. 回归退出码 0，末行写「真实 store 指数未变」。
+2. 命令行冒烟的末行是 `ALL CLI SMOKE CHECKS PASSED`，引擎自检 15 项全符合。
+3. 投影器的检查退出码 0。
+4. 类型检查零错误。
+5. 沙箱里用浏览器走一遍新增的界面。
+6. 派工冒烟的结果如实汇报。
+7. 真实 store 的层包、决策、证据图按修改时间确认没有被写过。
+8. 重启两个服务，只读复核正式界面。
+
+### 环境怎么起 {#HO-X-004}
+> 源：`platform/viz/README.md`、`frontend/README.md`
+
+两个服务是手动起的进程，机器重启之后要重新拉起：
+
+```bash
+python3 platform/viz/server.py --port 8899          # 后端，默认连真实 store
+cd frontend && npm run dev                          # 前端，/api 代理到 8899
+```
+
+做试验用隔离副本：把 `platform/` 下的 `tools`、`schemas`、`store`，连同 `domains/`、`tasks/` 复制到 `/tmp` 下的一个目录，用 `WF_ROOT` 指向它再起后端。`platform/viz/regress.py` 的 `build_sandbox` 是现成的参考。
+
+## 5. 边界：接手的人可以动什么
+
+### 永远不要做 {#HO-B-001}
+> 源：方案 ORCH-N-001；`platform/README.md`；`SPEC.md` 的协作规范
+
+- 没有用户的批准，不实施方案的任何一步。
+- 不替用户签字。不批准、不驳回任何待批事项，不以用户的名字记决定。第 6 节里那三条旧的待批决定也一样。
+- 不直接改 `platform/store/` 下的记录，不手改已有层包里结论性的字段。写操作只走 `wf` 命令或界面。
+- 不在真实 store 上做试验。
+- 不动 `<NDF-Harness>`。
+- 不编辑、不重排 `SPEC.md` 里别人的条目。
+
+### 可以做 {#HO-B-002}
+> 源：同上
+
+- 读仓库里的任何文件。
+- 在 `/tmp` 下的隔离副本上跑回归、冒烟和浏览器实测。
+- 用户批准之后，在方案列出的可写范围里改动。
+- 用户改了主意时改方案文件，改完重新写这份交接。
+
+### 动手前后应该跑 {#HO-B-003}
+> 源：`platform/viz/README.md` 的回归一节
+
+回归、命令行冒烟、引擎自检、投影器的检查、类型检查。改动之前跑一遍记下结果，改动之后再跑一遍对比。
+
+## 6. 等用户一句话的事
+
+### 五件事在等人 {#HO-G-001}
+> 源：本次会话；`SPEC.md` 里 2026-11-24 21:00 条目的「未做 / 遗留」
+
+1. **批不批准这份方案**，或者改哪一条。
+2. **五项假设**，在方案 ORCH-D-002 里。它们是我按推荐项做的，不是用户的偏好。
+3. **派工用哪种方式**：人工从界面出开工简报再另开会话，还是让调度 agent 用宿主子代理自动派。
+4. **是否对局域网开放服务**。现在只能在本机打开。
+5. **三条旧的待批决定**，和这份方案无关，但一直挂着：sme2 迭代 3 的 L7（`PKG-L7-sme2-i3-chainform-verdict`）和 L8（`PKG-L8-sme2-i3-conclusion`），cvfpu 的 L1（`PKG-L1-cvfpu-cast-overflow`）。看它们的内容用 `python3 platform/tools/wf.py card <包名>`，或者在界面上打开对应层，在「人的决定」里看。**提醒用户一句就够了，不要替他批。**
+
+## 7. 没解决的、没测的、本文没写进来的
+
+### 没有确立的 {#HO-Q-001}
+> 源：本次会话
+
+- 宿主子代理定义的格式，以及它对 tools 的限制是否生效。方案的第 0 步就是去核实它。
+- 两种做法哪个效率更高，没有实测。方案里「每层记录耗时和模型」做完之后才有数据可以比。
+- 派工冒烟能不能在实施的那次会话里完成，取决于第 0 步的结果。
+
+### 本文没有写进来的 {#HO-Q-002}
+> 源：本次会话
+
+- 上一轮的全过程。只写了它做成了什么和去处。
+- 用户在 2026-11-24 那一轮的七点意见原文。它在 `SPEC.md` 的 2026-11-24 21:00 条目里。
+- NDF-Harness 没有通读。我自己读了条款格式、语言规范、关于分层散文和人读面的两份提案、`ndf-workflow` 的总览与关闭两页。委派那页是一个子代理代读的，我只拿到了它摘出的几行。
+- 这次会话很长，更早的过程已经被压缩成了摘要。摘要里的话，凡是没有在本文或方案里重新核对过的，不要当作事实。
+
+## 8. 回执
+
+本文写作时，和这份方案有关的决定只有下面几件。「口令」一栏是用户原话；没有原话的写明情况。
+
+| 事件 | 口令 | 谁 | 时间 | 对象 | 状态 |
+|---|---|---|---|---|---|
+| 给出分析与推荐 | 没有口令 | zcode-glm | 2026-11-25 上午，未记精确时间 | 两个方案的比较 | 已给出，用户没有表态 |
+| 提交方案 | 没有批准 | 用户 | 2026-11-25 | `orchestration-plan-20261125.md` | 未批准，未实施 |
+| 要求写交接 | 「把目前的待执行方案写到本地，并且按ndf哲学输出一份handoff交接文档」 | 用户 | 2026-11-25 | 本文与方案文件 | 已收到 |
+| 批准「写两份文档」 | 没有口令，在计划模式下点了批准 | 用户 | 2026-11-25，10:53 到 10:58 之间 | 本文与方案文件 | 已执行 |
+
+方案文件的 sha256 是 `e2165215add6510481e630fefca9dc51fe0b642a6d74381dfee092abb3cb56a2`。它对应的是「未批准」这一版。用户批准时请重新算一遍。
+
+## 9. 本文与 NDF 做法的对应
+
+> 源：`<NDF-Harness>/skill/ndf-workflow/OVERVIEW.md`、`norms/meta/language.md`、`norms/meta/open/proposal-meta-compiler-layered-prose.md`
+
+- NDF 的事实源是带稳定 ID 的条款树。这里对应方案文件，它的条款 ID 是 `ORCH-…`。
+- NDF 给人审的是从条款编出来的分层散文，不是节点表。这里对应本文：按意图、现状、机制、怎么做分层，数字都放附录。
+- NDF 每条标题下有溯源行。这里对应每个标题下面的「源」。
+- NDF 的 pack 带写根。这里对应第 0 节的可写范围与禁写。
+- NDF 的指挥面先造 pack、等人审、再派发。这里对应「第一步不是动手」。
+- NDF 只认磁盘上的完成回执。这里对应「怎样算做完」里的八条。
+- NDF 的截断要写成人话。这里对应第 7 节。
+
+## 附录 A：store 指纹
+
+> 机器核对用。2026-11-25 10:58 在 `<repo>` 下算。
+
+算法：把文件按路径排序，依次拼接每个文件的字节，取 sha256 的前 16 位。
+
+| 范围 | 文件数 | 指纹 |
+|---|---|---|
+| 层包信封 `domains/*/*/PKG-*/envelope.json` | 30 | `038508277a933aac` |
+| store 索引（不含 benchmarks）+ 层包信封 + `pack.json` | 6 + 30 + 2 | `87156577970fa1b9` |
+| `tasks/*.json` + `benchmarks.jsonl` | 3 + 1 | `ac34ebb003114409` |
+| `regress.store_fingerprint()`，另一种算法，完整值 | — | `8de06b81707524fed1461b4a58e2cdf559026c69b1ae9385eb62d172c2d26035` |
+
+复现前三行：
+
+```bash
+python3 - <<'EOF'
+import hashlib, glob
+from pathlib import Path
+def cat(files):
+    h = hashlib.sha256()
+    for p in sorted(files): h.update(Path(p).read_bytes())
+    return h.hexdigest()[:16]
+env = glob.glob('domains/*/*/PKG-*/envelope.json'); pack = glob.glob('domains/*/pack.json')
+store = [p for p in glob.glob('platform/store/**/*.jsonl', recursive=True) if 'benchmarks' not in p]
+tasks = glob.glob('tasks/*.json')
+print(len(env), cat(env))
+print(cat(store + env + pack))
+print(cat(tasks + ['platform/store/index/benchmarks.jsonl']))
+EOF
+```
+
+复现修改时间：
+
+```bash
+ls -lt --time-style=long-iso domains/*/*/PKG-*/envelope.json | head -1
+ls -lt --time-style=long-iso platform/store/index/*.jsonl platform/store/graph.jsonl tasks/*.json | head -3
+```
+
+接手时先算一遍。和上表不一样，说明有人动过 store，先弄清楚是谁、为什么，再往下做。
+
+## 附录 B：改动前的文件指纹
+
+> 机器核对用。2026-11-25 10:58 算，sha256 的前 16 位。方案获批之后，这些文件大多会被改到；动手之前先核对。
+
+```
+147dac6f1b391a55  platform/tools/wf.py
+22cd4a2f2a0acaf2  platform/tools/layer_bus.py
+867c8c702c9a1e05  platform/tools/bind_hosts.py
+e93435a855ad88d4  platform/tools/caselaw.py
+aff7a2a0364fbe69  platform/agents/profiling.md
+8d663057f08c2b67  platform/agents/design.md
+58a8cbd9972d5ddb  platform/agents/integration.md
+e4967ebc316a6ef8  platform/methodology/layer-discipline.md
+59a6fcf6637eb65d  platform/methodology/l3-criteria.md
+bc1a23a9cc70b774  platform/schemas/registry.json
+3610fbf58bbeb785  platform/schemas/layer_package.json
+698fa9f74f4be2ba  platform/schemas/workflow_state.json
+a9e382f9272bcb32  platform/viz/server.py
+a33bdb225ec7663c  platform/viz/regress.py
+49d45ea3e361afe7  platform/viz/cli_smoke.sh
+6a646d820e9dd7d6  frontend/src/App.tsx
+98fdc74ed31e7816  frontend/src/types/index.ts
+54c5bac02f0e9c3b  frontend/src/api/client.ts
+a196e275472740cc  frontend/src/features/tasks/useWork.ts
+0348361c74d5be37  frontend/src/features/flow/Flow.tsx
+c16da66a508be969  frontend/src/features/layers/LayerDetail.tsx
+5c69215a926b9448  frontend/src/features/evidence/Evidence.tsx
+328557a674c87043  frontend/src/features/shared/useAction.ts
+c09a6500d804b832  frontend/src/features/shared/ui.tsx
+aa4c52629b051ccb  frontend/src/status.ts
+993769d8ee70065f  VISUAL-WORKFLOW-DESIGN.md
+```
+
+复现：
+
+```bash
+sha256sum platform/tools/wf.py | cut -c1-16
+```
+
+本仓不是 git 仓库，所以「改动之前」的原件靠两样东西：`.zcode/backups/` 里的备份，和上面这张表。
+
+## 附录 C：类型检查用的临时配置
+
+> 机器核对用。
+
+把下面的内容存成仓库之外的任意位置，比如 `/tmp/tscheck/tsconfig.json`，然后在 `frontend/` 下跑 `npx tsc -p /tmp/tscheck/tsconfig.json`。退出码 0 就是零错误。
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2020", "lib": ["ES2020", "DOM", "DOM.Iterable"], "module": "ESNext",
+    "moduleResolution": "bundler", "jsx": "react-jsx", "strict": true, "noEmit": true,
+    "skipLibCheck": true, "isolatedModules": true, "resolveJsonModule": true,
+    "allowImportingTsExtensions": true, "noUnusedLocals": true, "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true, "useDefineForClassFields": true,
+    "typeRoots": ["<repo>/frontend/node_modules/@types"],
+    "types": ["react", "react-dom"]
+  },
+  "include": ["<repo>/frontend/src"]
+}
+```
+
+## 附录 D：已经踩过的坑
+
+> 源：本次会话与上一轮；`frontend/README.md` 的「工程注意事项」
+
+- 前端开发服务器偶尔漏掉同一个文件的第二次修改，交出一个半新半旧的模块，页面变成空白。类型检查照样通过，因为磁盘上的源码是对的。出现空白就重启 `npm run dev`。
+- 用 `pkill -f` 按命令行找进程，会把执行它的那个 shell 一起杀掉。按端口找到进程号再结束它。
+- `wf gate` 在「待人决定」和「未验证」时退出码不是 0，这是设计如此。
+- 浏览器自动化里，点击偶尔超时。改成在页面内触发点击。`window.confirm` 会卡住页面内的调用，要把点击推迟，再接住弹出的确认框。
+- 隔离副本的后端在启动时载入引擎代码。改了 `wf.py` 要重启那个后端才生效。
+- 计划模式下，命令行只放行只读的命令。列目录、看时间可以；跑 python、访问网络、往 `/tmp` 写文件都不行。
+- store 没有并发锁。多个 agent 同时写要错开。
+
+## 附录 E：一段可以直接发给用户的纯文本
+
+> 源：用户可能通过微信阅读，长汇报要给纯文本摘要。下面是接手的 agent 第一次向用户汇报时可以直接用的一段，按实际情况改。
+
+```
+方案已经写到本地了，没有动任何平台代码和层包。
+
+两个文件：
+handoff/orchestration-plan-20261125.md    待执行方案，未批准、一步未实施
+handoff/orchestration-handoff-20261125.md 交接文档
+
+方案的结论是走方案 1：每层一个 agent 定义，调度规则放在确定的地方，层与层共享的是
+store 里的接口卡而不是会话。依据是设计文档早定的「不共享隐式上下文、只共享显式契约」，
+NDF-Harness 自己也是这个形态，还有 11-13 那次判据错误跨了五层才被你发现。
+
+要说清楚的：效率「方案 1 更高」是按文件大小推出来的，没有两种做法的实测数据。
+token 数也是粗估的。宿主子代理定义的格式我还没核实，这是方案的第 0 步。
+
+方案里有五项假设是我按推荐项做的，不是你的偏好，麻烦你确认或改：
+1. 八份层定义加一份调度 agent 定义，三个角色包保留
+2. 派工人工和自动都支持
+3. 默认按顺序派工，不并行
+4. 工具边界先做声明加尽力拦截，不是硬隔离
+5. 这一版不接按层选模型
+
+现在核过一遍：回归 158 条全过，自检 15/15，类型检查零错误，两个服务在跑，
+store 没有被写过（层包和决策的修改时间还停在 11-19）。
+
+要我开始做，说一声就行；要改哪一条，报条款号（比如「去掉 ORCH-S-003」）。
+另外还有三条旧的待批决定挂着，和这次无关，sme2 迭代 3 的 L7、L8 和 cvfpu 的 L1，
+要不要一起看你说。
+```
+
