@@ -162,7 +162,14 @@ wf iter-seal   <iteration> --as 署名 --reason "…"     # 结束一轮
 wf iter-abort  <iteration> --as 署名 --reason "…"     # 终止一轮不再推进的迭代（数据保留，默认折叠）
 wf task-seal   --task T --as 署名 --reason "…"        # 封板（SHIP），留署名决策
 wf next [--iteration ITER-…]                           # 前沿 + 任务级提示（待批章程、Mission Review）
+wf task-list [--all]                                   # 列出任务；默认不含已归档的
+wf task-archive --task T [--reason "…"]                # 归档：不在导出 / next / 界面呈现，store 里的记录保留
+wf task-archive --task T --restore                     # 恢复归档
 ```
+
+**归档**是呈现开关，与任务状态正交。归档之后：任务与它的层包不进 `state-export`（`/api/state` 不再有它们），
+`wf next` 不再提示，界面看不到；它的层包与决策仍在 store 里，`wf task-show` / `wf card` 照样按 ID 查得到，
+它上面的待批事项也不进待批队列（要处理直接 `wf approve <DEC-id> --as <署名>`）。归档任务不能再开迭代或建层包。
 
 - 任务记录在 `tasks/<task_id>.json`；新任务的层包放在默认位置 `domains/general/`（首次用到时创建）；
   旧任务的层包留在原来的目录，任务记录里以 `namespace` 记着。

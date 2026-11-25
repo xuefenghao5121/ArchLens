@@ -24,6 +24,10 @@ EOF
 : > "$SBX/.fail"
 WFR() { WF_ROOT="$SBX" python3 "$SBX/platform/tools/wf.py" --root "$SBX" "$@"; }
 step() { echo; echo "### $*"; }
+# 真实 store 里只保留 cvfpu 任务；下面要用回填的历史任务做卡片与状态导出的检查，先在副本里恢复
+WFR task-archive --task TASK-sme2-flow1 --restore >/dev/null 2>&1 || true
+WFR task-archive --task TASK-cvfpu-bugfix-demo --restore >/dev/null 2>&1 || true
+
 WF() {  # WF <tail-lines> <args…>: prints the last N lines; a non-zero exit is recorded in the marker file
   local n="$1"; shift
   local out rc

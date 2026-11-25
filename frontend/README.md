@@ -51,6 +51,12 @@ cd frontend && npm install && npm run dev
 
 旧地址 `/layers`、`/decisions` 自动跳转到 `/flow`、`/`。
 
+## 只呈现没归档的任务
+
+任务记录上的 `archived` 是一个呈现开关。归档的任务与它的层包不进 `/api/state`，所以研究总览、流程编排、证据页、
+任务选择器里都不会出现；它们还在 store 里，`wf task-show` / `wf card` / `wf task-archive --restore` 仍可查可恢复。
+当前只保留 cvfpu 这个示例任务，其余两个已归档。
+
 ## 层 agent 与开工简报
 
 流程页的「每一层由谁做、用什么」直接来自 agent 定义（`platform/agents/<层>/agent.md`）。层详情左栏列出

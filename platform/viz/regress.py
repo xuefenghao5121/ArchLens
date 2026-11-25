@@ -134,6 +134,12 @@ def run(ctx: Ctx):
     L1C = "PKG-L1-cvfpu-cast-overflow"          # 高人类权重层、正等待用户批准
     L3C = "PKG-L3-cvfpu-cast-overflow-fix"
     L4C = "PKG-L4-cvfpu-cast-overflow-contract"
+
+    # 真实 store 里只保留 cvfpu 任务，其余已归档。下面这些用例要用回填的历史迭代（沿用、折叠、待批），
+    # 先在沙箱副本里把它们恢复；归档本身在 R17 里单独测。
+    for tid in ("TASK-sme2-flow1", "TASK-cvfpu-bugfix-demo"):
+        ctx.wf("task-archive", "--task", tid, "--restore")
+    print("（沙箱夹具：已恢复真实 store 里归档的两个历史任务，供下面沿用 / 折叠 / 待批的用例使用）")
     LAYERS = ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"]
     STATE_WORDS = {"未开始", "进行中", "待人决定", "未验证", "有问题", "已验证", "已作废"}
 
@@ -890,6 +896,53 @@ def run(ctx: Ctx):
                   rc != 0 and "caselaw-nope" in out and "工具包清单" in out, out[:160])
         rc, out = ctx.wf("guide")
         ctx.check("恢复定义后 guide 正常", rc == 0, out[:80])
+
+    print("R17 归档：只保留 cvfpu，其余不在导出与界面呈现（store 里的记录保留）")
+    sb = ctx.get("/api/state")
+    before_tasks = {t["task_id"] for t in sb["tasks"]}
+    before_pkgs, before_pending = sb["summary"]["total_packages"], sb["summary"]["pending_decisions"]
+    before_hidden = sb["summary"]["hidden_packages"]
+    ctx.wf("task-archive", "--task", "TASK-sme2-flow1", "--reason", "回归：只保留 cvfpu")
+    ctx.wf("task-archive", "--task", "TASK-cvfpu-bugfix-demo", "--reason", "回归：只保留 cvfpu")
+    sa = ctx.get("/api/state")
+    after_tasks = {t["task_id"] for t in sa["tasks"]}
+    ctx.check("归档后导出里少了这两个任务，其余都在",
+              after_tasks == before_tasks - {"TASK-sme2-flow1", "TASK-cvfpu-bugfix-demo"},
+              str(sorted(after_tasks)))
+    ctx.check("归档任务的 22 个层包一并从导出里消失",
+              sa["summary"]["total_packages"] == before_pkgs - 22
+              and not any(p["package_id"] in ("PKG-L2-sme2-bt-dequant-attribution", "PKG-L1-cvfpu-anchor")
+                          for g in sa["layers"].values() for p in g["packages"]),
+              f"{before_pkgs} → {sa['summary']['total_packages']}")
+    ctx.check("归档任务上的待批事项不进队列（仍是可批的，只是不展示）",
+              sa["summary"]["pending_decisions"] < before_pending
+              and not any("sme2" in p for d in sa["pending_decisions"] for p in d["package_ids"]),
+              f"{before_pending} → {sa['summary']['pending_decisions']}")
+    ctx.check("折叠数不再算归档的包", sa["summary"]["hidden_packages"] == before_hidden - 22,
+              f"{before_hidden} → {sa['summary']['hidden_packages']}")
+    rc, out = ctx.wf("task-list")
+    ctx.check("wf task-list 默认不列归档任务，但提示有几个",
+              rc == 0 and "已归档" in out and "TASK-sme2-flow1  [" not in out, out[:200])
+    rc, out = ctx.wf("task-list", "--all")
+    ctx.check("wf task-list --all 列出归档任务", rc == 0 and "TASK-sme2-flow1" in out, out[:120])
+    rc, out = ctx.wf("next")
+    ctx.check("wf next 不再提归档任务上的待批",
+              rc == 0 and "DEC-20261117-092747" not in out and "DEC-20261117-093133" not in out, out[-200:])
+    ctx.check("归档任务的层包仍可按包号查（审计）",
+              ctx.get("/api/package/PKG-L2-sme2-bt-dequant-attribution")["card"]["package_id"]
+              == "PKG-L2-sme2-bt-dequant-attribution")
+    rc, out = ctx.wf("iter-new", "--task", "TASK-sme2-flow1", "--reason", "x")
+    ctx.check("归档任务不能再开迭代", rc != 0 and "已归档" in out, out[:120])
+    ctx.check("归档写进了任务记录（archived / 时间 / 原因）",
+              (lambda t: t.get("archived") is True and bool(t.get("archived_at")) and "只保留 cvfpu" in (t.get("archived_reason") or ""))(
+                  json.load(open(ctx.root / "tasks/TASK-sme2-flow1.json", encoding="utf-8"))))
+    ctx.wf("task-archive", "--task", "TASK-sme2-flow1", "--restore")
+    ctx.wf("task-archive", "--task", "TASK-cvfpu-bugfix-demo", "--restore")
+    sr = ctx.get("/api/state")
+    ctx.check("恢复后回到归档前的任务数 / 包数 / 待批数",
+              {t["task_id"] for t in sr["tasks"]} == before_tasks
+              and sr["summary"]["total_packages"] == before_pkgs
+              and sr["summary"]["pending_decisions"] == before_pending)
 
     print("R9 引擎自检")
     rc, out = ctx.wf("selftest")

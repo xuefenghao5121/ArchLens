@@ -460,6 +460,11 @@ class WF:
                     return tasks[m.group(1)], it
         raise SystemExit(f"错误：找不到迭代：{ref}")
 
+    def visible_tasks(self, namespace=None):
+        """要在平台呈现的任务：去掉 archived 的。归档的任务与它的层包留在 store 里可查（wf task-show / card），
+        但不进 state-export、不进 wf next、不在界面出现。"""
+        return {tid: t for tid, t in self.tasks(namespace).items() if not t.get("archived")}
+
     def iteration_of(self, env, tasks=None):
         """包属于哪个 (任务, 迭代)。优先级：迭代里显式列出 → 包上的 provenance.iteration_id →
         按创建时间落进当时进行中的迭代。兜底只认「层包存放在同一位置」的进行中任务：
@@ -494,6 +499,8 @@ class WF:
         """默认视图里的迭代：进行中任务里进行中的迭代，按开始时间升序。"""
         out = []
         for t in self.tasks(namespace).values():
+            if t.get("archived"):
+                continue
             if t.get("status") in TASK_LIVE:
                 out += [(t, it) for it in t.get("iterations", [])
                         if it.get("status") in TASK_LIVE]
@@ -928,20 +935,42 @@ class WF:
     # ---------- 决策队列管理（§3.1 人类决策管理） ----------
     def pending_decisions(self):
         """reviewer=pending-user、未被 superseded，且仍被存活包或任务引用的决策。
-        挂在任务上的章程 / 开迭代决策不挂在任何包上，但同样是待人类批准的事项。"""
+        挂在任务上的章程 / 开迭代决策不挂在任何包上，但同样是待人类批准的事项。
+        已归档任务（及它的层包）上的待批事项不进这个队列——它们不在平台呈现，用 wf approve 直接处理。"""
         superseded = {e["to"] for e in self.graph() if e["edge_type"] == "supersedes"}
-        live_refs = set()
+        tasks = self.tasks()
+        archived = {tid for tid, t in tasks.items() if t.get("archived")}
+        dec_task = {}
+        for tid, t in tasks.items():
+            dec_task[t.get("charter_decision_id")] = tid
+            for it in t.get("iterations", []):
+                dec_task[it.get("entry_decision_id")] = tid
+        live_refs, dec_pkgs, pkg_task = set(), {}, {}
         for _, env in self.find_packages():
-            live_refs.update(env.get("decision_refs", []))
-        for t in self.tasks().values():
+            pid = env["identity"]["package_id"]
+            owner, _ = self.iteration_of(env, tasks)
+            pkg_task[pid] = owner["task_id"] if owner else None
+            for did in env.get("decision_refs", []):
+                live_refs.add(did)
+                dec_pkgs.setdefault(did, []).append(pid)
+        for t in tasks.values():
             live_refs.add(t.get("charter_decision_id"))
             live_refs.update(it.get("entry_decision_id") for it in t.get("iterations", []))
         live_refs.discard(None)
         live_refs.discard("")
+
+        def _archived(d):
+            tid = d.get("task_id") or dec_task.get(d["decision_id"])
+            if tid:
+                return tid in archived
+            pkgs = dec_pkgs.get(d["decision_id"], [])
+            return bool(pkgs) and all(pkg_task.get(p) in archived for p in pkgs)
+
         return [d for d in self.decisions().values()
                 if d.get("reviewer") == "pending-user"
                 and d["decision_id"] not in superseded
-                and d["decision_id"] in live_refs]
+                and d["decision_id"] in live_refs
+                and not _archived(d)]
 
     def resolve_decision(self, dec_id, user, reject=False, reason=""):
         """批准/驳回一条待批决策：记录不可变——追加新决策 + supersedes 边，不覆盖历史。"""
@@ -1035,15 +1064,20 @@ class WF:
         """默认只看进行中的包：未归迭代的包，以及进行中任务里进行中迭代的包。
         已封板 / 已终止的迭代留在 store 里可查，但不再占前沿。指定 iteration 则只看它（含沿用）。"""
         pkgs = self.find_packages(domain=domain)
-        total = len(pkgs)
         if iteration:
             task, it = iteration if isinstance(iteration, tuple) else self.find_iteration(iteration)
             layers_env = self.iteration_layers(task, it)
             keep = {e["identity"]["package_id"] for L in layers_env
                     for kind in ("own", "reused") for e in layers_env[L][kind]}
             pkgs = [(p, e) for p, e in pkgs if e["identity"]["package_id"] in keep]
+            total = len(pkgs)
         else:
             tasks = self.tasks(domain)
+            archived_ids = {tid for tid, t in tasks.items() if t.get("archived")}
+            # 已归档任务的包不参与任何默认视图：连「折叠了多少」也不该算它
+            pkgs = [(p, e) for p, e in pkgs
+                    if (self.iteration_of(e, tasks)[0] or {}).get("task_id") not in archived_ids]
+            total = len(pkgs)          # 归档的包不算「折叠」，它根本不在平台呈现
 
             def _live(e):
                 t, i = self.iteration_of(e, tasks)
@@ -2444,6 +2478,8 @@ def cmd_new_pkg(w, args):
     iteration_id = task_id = ""
     if getattr(args, "iteration", None):
         owner, it = w.find_iteration(args.iteration)
+        if owner.get("archived"):
+            raise SystemExit(f"错误：{iteration_id} 所属任务已归档，不能再建层包")
         if (owner.get("namespace") or DEFAULT_NAMESPACE) != dom:
             raise SystemExit(f"错误：迭代 {args.iteration} 的层包存放在别的位置（{owner.get('namespace')}），"
                              f"与 --domain {dom} 不一致")
@@ -3082,8 +3118,12 @@ def cmd_state_export(w, args):
     边里引用但已无 envelope 的包 ID 标为 dangling_ref（不冒充 layer_package）。
     """
     domain = args.domain
-    tasks = w.tasks(domain)
-    pkgs = w.find_packages(domain=domain)
+    all_tasks = w.tasks(domain)
+    archived_ids = {tid for tid, t in all_tasks.items() if t.get("archived")}
+    tasks = {tid: t for tid, t in all_tasks.items() if tid not in archived_ids}
+    # 归档任务的层包同样不进导出：界面与编排 agent 看到的只有没归档的任务
+    pkgs = [(p, e) for p, e in w.find_packages(domain=domain)
+            if (w.iteration_of(e, all_tasks)[0] or {}).get("task_id") not in archived_ids]
     walk = w.walk_state(domain=domain)
 
     dec_to_pkg = {}
@@ -4006,9 +4046,34 @@ def cmd_task_new(w, args):
     return task
 
 
+def cmd_task_archive(w, args):
+    """归档 / 恢复一个任务。归档只影响呈现：任务与它的层包仍在 store 里，wf task-show / wf card 照样能查。"""
+    task = w.find_task(args.task)
+    if getattr(args, "restore", False):
+        task.pop("archived", None)
+        task.pop("archived_at", None)
+        task.pop("archived_reason", None)
+        verb = "恢复"
+    else:
+        if task.get("status") in TASK_LIVE:
+            print(f"  注意：{task['task_id']} 还是 {task['status']}。归档后它和它的层包都不在界面呈现。")
+        task["archived"] = True
+        task["archived_at"] = now()
+        task["archived_reason"] = (getattr(args, "reason", "") or "").strip()
+        verb = "归档"
+    task["updated_at"] = now()
+    w.save_task(task)
+    print(f"{task['task_id']} 已{verb}"
+          + (f"（原因：{task['archived_reason']}）" if task.get("archived_reason") else "")
+          + "。store 里的层包与决策保留，wf task-show / wf card 仍可查。")
+
+
 def cmd_iter_new(w, args):
     """开下一轮迭代。理由必填：每次 L8 后的 Mission Review 才决定要不要再迭代。"""
     task = w.find_task(args.task)
+    if task.get("archived"):
+        raise SystemExit(f"错误：{task['task_id']} 已归档，不在平台呈现；要重新推进请先 wf task-archive --task "
+                         f"{task['task_id']} --restore")
     if task["status"] not in TASK_LIVE:
         raise SystemExit(f"错误：{task['task_id']} 已 {task['status']}，重开须新章程（wf task-new）")
     reason = (args.reason or "").strip()
@@ -4112,7 +4177,14 @@ def cmd_iter_abort(w, args):
 
 
 def cmd_task_list(w, args):
-    tasks = sorted(w.tasks(args.domain).values(), key=lambda t: (t.get("created_at") or "", t["task_id"]))
+    all_recs = list(w.tasks(args.domain).values())
+    show_all = bool(getattr(args, "all", False))
+    archived = [t for t in all_recs if t.get("archived")]
+    if archived:
+        print(f"（{len(archived)} 个任务已归档，不在界面与导出呈现：" +
+              "、".join(t["task_id"] for t in archived) + ("）" if show_all else "；--all 才列出）"))
+    tasks = sorted([t for t in all_recs if show_all or not t.get("archived")],
+                   key=lambda t: (t.get("created_at") or "", t["task_id"]))
     if not tasks:
         print("没有任务。立项：wf task-new --title … --goal \"目标原话\" --benchmark … --template …")
         return tasks
@@ -4126,6 +4198,9 @@ def cmd_task_list(w, args):
 
 def cmd_task_show(w, args):
     task = w.find_task(args.task)
+    if task.get("archived"):
+        print(f"（已归档：不在界面与导出里呈现。原因：{task.get('archived_reason') or '—'}；"
+              f"wf task-archive --task {task['task_id']} --restore 可恢复）")
     print(f"# {task.get('title', '')}（{task['task_id']}｜{task.get('status')}｜模板：{task.get('flow_template', '')}）")
     print(_goal_text(task.get("goal", {})))
     for b in task.get("benchmarks", []):
@@ -4540,9 +4615,17 @@ def build_parser():
     s.add_argument("--agent", default="")
     s.set_defaults(fn=cmd_iter_abort)
 
-    s = sub.add_parser("task-list", help="列出任务与迭代")
+    s = sub.add_parser("task-list", help="列出任务与迭代（默认不含已归档的任务）")
     s.add_argument("--domain", default=None)
+    s.add_argument("--all", action="store_true", help="连已归档的任务一起列出")
     s.set_defaults(fn=cmd_task_list)
+
+    s = sub.add_parser("task-archive", help="归档 / 恢复任务：归档后不在界面与导出呈现，store 里的记录保留")
+    s.add_argument("--task", required=True)
+    s.add_argument("--restore", action="store_true", help="恢复一个已归档的任务")
+    s.add_argument("--reason", default="")
+    s.set_defaults(fn=cmd_task_archive)
+
 
     s = sub.add_parser("task-show", help="任务的章程、benchmark、逐迭代逐层状态与任务级决策")
     s.add_argument("task", help="TASK-…（或短名）")
