@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
-import type { FlowNode, LayerPackageView } from '../../types'
+import type { FlowNode, GuideResponse as Guides, LayerPackageView } from '../../types'
 import { ITER_STATUS_META, iterationTitle } from '../../status'
 import { layerHref, useWork } from '../tasks/useWork'
 import { useOperator } from '../tasks/useOperator'
@@ -51,7 +51,10 @@ function NodeBox({ node, question, pkgOf, reusedOf, iterationId }: {
       data-state={node.state}
     >
       <div className="fnode-head">
-        <span className="fnode-layer">{node.layer} {node.name}</span>
+        <span className="fnode-layer">
+          {node.layer} {node.name}
+          {node.agent && <span className="fnode-agent" title="这一层由一个独立的 agent 做，只拿开工简报">{node.agent}</span>}
+        </span>
         {pkgs.length ? <StateChip word={node.state} small /> : <span className="muted small">还没有层包</span>}
       </div>
       <div className="fnode-q">{question}</div>
@@ -116,6 +119,41 @@ function Chain({ nodes, questions, pkgOf, reusedOf, iterationId }: {
         </div>
       ))}
     </div>
+  )
+}
+
+/** 每一层由谁做、用什么、怎样算做完。改定义文件后重跑投影器，这里跟着变。 */
+function AgentTable({ nodes, guide }: { nodes: FlowNode[]; guide: Guides | undefined }) {
+  if (!nodes.length) return null
+  const layerOf = (L: string) => guide?.layers.find((x) => x.layer === L)
+  return (
+    <section className="block flow-agents">
+      <div className="block-title">
+        <strong>每一层由谁做、用什么</strong>
+        <span className="note">定义在 platform/agents/&lt;层&gt;/agent.md；改完重跑 platform/tools/bind_hosts.py</span>
+      </div>
+      <table className="agent-table">
+        <thead>
+          <tr><th>层</th><th>agent</th><th>skills</th><th>tools</th><th>怎样算做完</th></tr>
+        </thead>
+        <tbody>
+          {nodes.map((n) => {
+            const g = layerOf(n.layer)
+            const a = g?.agent
+            const done = g ? [g.human ? '人签字' : '', g.needs_test ? '需测试' : ''].filter(Boolean).join(' · ') : ''
+            return (
+              <tr key={n.layer}>
+                <td className="mono">{n.layer} {n.name}</td>
+                <td>{a ? <><span className="agent-name">{a.name}</span><span className="muted small"> {a.host_name}</span></> : '—'}</td>
+                <td>{a?.skills.length ? a.skills.map((x) => <span key={x.name} className="tag" title={x.what}>{x.name}</span>) : '—'}</td>
+                <td>{a?.tools.length ? a.tools.map((x) => <span key={x.name} className="tag" title={x.what}>{x.name}</span>) : '—'}</td>
+                <td className="small muted">{done || '无'}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </section>
   )
 }
 
@@ -198,6 +236,9 @@ export default function Flow() {
               <span>benchmark：{task.benchmarks.map((b) => b.name).join('、') || '—'}</span>
             </div>
           </div>
+
+          {/* 每一层由谁做、用什么：编排在这里被摊开给人看 */}
+          <AgentTable nodes={nodes} guide={guide} />
 
           {/* 任务级的人的决定：章程没批、开某一轮没批……在这里处理 */}
           {(pending.length > 0 || task.status === 'draft') && (

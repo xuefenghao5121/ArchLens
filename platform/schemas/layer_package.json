@@ -30,7 +30,46 @@
         "tool_versions": {"type": "object"},
         "environment_hash": {"type": "string"},
         "created_at": {"type": "string"},
-        "updated_at": {"type": "string"}
+        "updated_at": {"type": "string"},
+        "mission_template": {"type": "string"},
+        "iteration_id": {"type": "string"},
+        "task_id": {"type": "string"},
+        "brief": {
+          "type": "object",
+          "description": "开工简报的回执：wf brief --out 写下时记（时间、署名、简报指纹、所含上游）",
+          "properties": {
+            "at": {"type": "string"},
+            "by": {"type": "string"},
+            "sha256": {"type": "string"},
+            "upstream": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "context_pulls": {
+          "type": "array",
+          "description": "接口卡之外另读上游的记录（wf show <上游包> --for <本包>）",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pkg": {"type": "string"},
+              "at": {"type": "string"},
+              "by": {"type": "string"}
+            }
+          }
+        },
+        "runs": {
+          "type": "array",
+          "description": "执行记录（wf run-log）：谁、用什么模型、跑了多久",
+          "items": {
+            "type": "object",
+            "properties": {
+              "at": {"type": "string"},
+              "agent": {"type": "string"},
+              "model": {"type": "string"},
+              "duration_s": {"type": ["integer", "null"]},
+              "note": {"type": "string"}
+            }
+          }
+        }
       }
     },
     "design_spec": {

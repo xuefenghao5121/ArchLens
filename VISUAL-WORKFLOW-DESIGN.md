@@ -573,3 +573,154 @@ AI 自由生成、自己闭环的，人无法检视；入口与概念多余（�
 - 单文件只读页（`platform/viz/index.html`）未改。三条待人批准的旧决定（sme2 迭代 3 的
   L7、L8，cvfpu 的 L1）、证据图里引用了但已没有层包的旧 ID、被取代的旧包未标记——这三项是历史遗留，本轮没有处理。
 - 服务仍只监听本机回环地址，局域网地址打不开（是否对外开放待用户决定）。
+
+## 12. 按层编排 agent：每层一个定义、确定的调度、看得见的上下文边界（zcode-glm，2026-11-25）
+
+用户提出「接下来要呈现出详细的可编排性」，并给了两个方案：方案 1 是每层一个 agent（一份独属于这层职责的
+`agent.md`，加上它要调用的 skills 和 tools 包，使用者看得见）；方案 2 是一个 agent 用 skills 把各层连起来、
+共用上下文。用户自己点出了区别：方案 1 的难点在层与层之间的记忆与上下文管理，方案 2 是大家共用上下文。
+
+先做了分析（结论见 §12.1），用户确认理解后批准执行。方案全文在 `handoff/orchestration-plan-20261125.md`
+（条款 ID `ORCH-…`），交接文档在同目录。本节记录实施结果。
+
+### 12.1 为什么走方案 1，以及「可编排性」指什么
+
+**目的不是让流程更自动，而是让上下文的边界和契约的边界重合。** 平台的价值不在于让 agent 多做步骤，而在于
+每次转换都留下可检查的工件、可证伪的实验、可追责的决策（设计文档 v2 §13）；它成立靠显式契约、独立验证、
+结论边界三件事。前两轮把层间传的**信息**做成了显式契约（接口卡 + 五条核对规则），但「谁在做」还是隐式的：
+层包上写了 owner，却没有一份东西定义这个 owner 的职责、工具和边界。契约到层为止，上下文却贯穿全程——30 个
+层包里 26 个出自同一个 agent。同一个上下文写判据又做裁决，「独立验证」与「结论边界」在实践中落空，11-13
+那次判据事故就是这么来的。
+
+**依据。**【实测】设计文档 v2 的 §2.6（不共享隐式上下文，只共享显式契约）、§3.1（控制面不参与微架构判断）、
+§3.3（独立验证面防止生成者与验证者共用同一误解）；NDF-Harness 自身是分角色、每跳重置会话、只认磁盘回执的
+形态；sme2 迭代 1 的 9 个层包合计 284 KB，三轮 19 个包 554 KB。【推断】「共用上下文装不下」与「方案 1 更
+高效」是从这些规模与事故推出来的，没有两种做法的对比数据——所以加了每层的执行记录，让这个问题以后能用数据
+回答。
+
+**「可编排性」的含义**：编排是明确的、看得见的、可核对的；其次是可调整（改定义文件和流程模板就能调，不用
+重新 prompt）。不包括在界面上直接给某一层换 agent 或换工具。
+
+### 12.2 九个定义：每层一个，加一个调度 agent
+
+`platform/agents/` 下每层一个目录，各一份 `agent.md`：
+
+```
+platform/agents/
+├── L1_observation/agent.md … L8_analysis/agent.md   每层一个
+├── orchestrator/agent.md                             调度 agent
+├── toolpacks.json                                    工具包清单
+└── {profiling,design,integration}.md                 角色包（能力分组，被层定义引用）
+```
+
+frontmatter 是机器读的部分，字段与约束见 `platform/schemas/layer_agent.json`（已登记 registry）：
+
+| 字段 | 内容 |
+|---|---|
+| `layer` | L1–L8 或 orchestrator |
+| `name` | 人读的名字（如「观测 agent」） |
+| `host_name` | 宿主里的名字（`sim-layer-l1`），投影成 `.zcode/agents/<host_name>.md` 的文件名 |
+| `role` | profiling / design / integration / orchestrator，必须与引擎的 `LAYER_AGENT` 一致 |
+| `skills` | 要用的 skill，必须是 `.agents/skills/<名>/SKILL.md` 存在的 |
+| `tools` | 工具包名，必须出现在 `toolpacks.json` 里 |
+| `writes` | 可写范围（层包目录、与这一层有关的工程目录） |
+| `must_not` | 不许做的事（不替人签字、不改上游、不隐藏失败等） |
+
+正文是人读的职责、输入、工作步骤、完成标准与纪律要点，内容从 `LAYER_GUIDE`、`LAYER_RULES`、角色包与
+`domains/sme2/environment.md` 归纳，不新编。工具包只收已经在环境速查、判例库、skills 里出现过的东西：
+`wf:core`、`wf:read`、`wf:dispatch`、`caselaw`、`sim:gem5-run`、`sim:gem5-build`、`kernel:toolchain`、
+`rtl:pycircuit-verilator`（领域相关的命令指向 `domains/<d>/environment.md`，不在清单里硬写）。
+
+**加载与校验**：引擎每次用到定义时读九份文件与工具包清单，按 schema 校验，并核对「skills 在磁盘上存在、
+tools 在清单里存在、role 与 `LAYER_AGENT` 一致、host_name 不重复」。任何一条不满足直接报错，不静默降级。
+按文件修改时间缓存，改完定义下一次调用就生效。
+
+顺带补上一个旧缺口：`rtl-generation-discipline` 与判例库 `caselaw` 此前没挂到 L5，现在挂上了。
+
+### 12.3 调度：规则放在确定的地方，调度 agent 很薄
+
+顺序由流程模板定，完成由核对规则定，派发按一份写下来的规程
+（`platform/methodology/orchestration.md`，投影成 skill `flow-orchestration` 与手册镜像）。调度 agent
+只做四类事：定位前沿（`wf next`）、造包（`wf brief --out`）、派发、收工核对（`wf gate` + `wf run-log`），
+再加把要人决定的事端出来。它不做任何一层的层内工作，也不对微架构问题下判断——对应设计文档 §3.1「控制面
+负责流程一致性，不参与具体微架构判断」。
+
+这条与 NDF 的对应：Command 造 pack、等人审、派发 ↔ 造开工简报、等人签字、派给层 agent；每跳重置会话 ↔
+每层一个 agent 只拿简报；成功只认磁盘回执 ↔ 只认 `wf gate` 写进信封的核对结论。
+
+### 12.4 上下文留痕：三层写入同一个信封
+
+方案 1 的弱点是接口卡有损、边界处会丢上下文。对策不是让 agent 自己记，而是把「拿到什么、额外读了什么、
+谁跑了多久」都记在层包信封的 `provenance` 里：
+
+```bash
+wf brief <包> --out --by <署名>      # 简报写成 <包目录>/brief.md；记 at / by / sha256 / upstream
+wf show <上游包> --for <本包> --by <署名>   # 接口卡之外另读上游；记一条 context_pulls
+wf run-log --pkg <包> --agent <谁> [--model 名] [--duration 秒]   # 记一条执行
+```
+
+卡片与界面据此回答三个问题：这一层开工时拿到的是什么（简报的指纹）、它额外读了什么（回读记录）、上次是谁
+用什么模型跑了多久（执行记录）。简报的指纹能对上磁盘上的 `brief.md`，改过就对不上。
+
+### 12.5 边界：层 agent 不能替人签字
+
+层 agent 开工前在简报首行被要求 `export WF_ACTOR=layer:<层>`。在这个变量下，`wf` 拒绝 `approve`、
+`reject`、`gate --override`、`invalidate`，并把 `decide` 的 reviewer 强制为 `pending-user`（层 agent 只能
+准备，不能签）。
+
+这是防误操作的护栏，**不是硬隔离**：直接改文件或走 HTTP 绕得过去。文档与定义里都照实写。宿主侧另有一层
+可以真正生效的限制：投影出来的 `.zcode/agents/<host_name>.md` 在 frontmatter 里写了 `tools:`——层 agent 给
+读写与 Bash，调度 agent 只给 `Read, Bash, Glob, Grep`（没有写文件的能力）。宿主对项目级定义不允许设置
+`permissionMode`，所以权限模式没有用。
+
+### 12.6 界面：编排摊开给人看
+
+- **流程编排页**：目标块下方新增「每一层由谁做、用什么」——按模板顺序一行一层，列出 agent（含宿主名）、
+  skills、tools、怎样算做完（人签字 / 需测试）。每个框的标题旁标出这一层的 agent 名。只列这个模板涉及的层。
+- **层详情**：左栏在「这一层是什么」之后新增「这一层的 agent」：名字、宿主名、所属角色、skills 与 tools
+  （悬浮显示一句用途）、可写范围、不许做的事，可展开完整定义正文。页头多三项：开工简报时间（或「还没有
+  留档」）、另读上游几处、上次执行（agent · 模型 · 时长）。「给 agent 的简报」改名为「开工简报」，旁边
+  新增「留档」按钮。
+- **证据与回溯**：每层「用了上游的」一行后面列出「另读」的包，点回那一层。
+
+### 12.7 契约 0.5 与接口
+
+- `layer_package.provenance` +`brief` / +`context_pulls` / +`runs`（都只由上面三条命令写入）。
+- 新增 `layer_agent` 1.0（registry 已登记）。
+- `workflow_state` 0.5：每个迭代的 `nodes` 每项 +`agent`；层包条目的 `card` +`context` / +`runs`，
+  `card.guide` +`agent`。
+- 服务端：`/api/guide` 每层的 `agent` 带完整正文，另有 `orchestrator`；新动作 `brief_out`（pkg、by）与
+  `run_log`（pkg、agent、model?、duration?、note?）。动作总数 19。
+- 命令行：`wf guide` 每层打印 agent、纪律、工具包、可写范围；`wf next` 在前沿包旁给出开工命令；
+  `wf brief --out/--by`、`wf show --for/--by`、`wf run-log`。
+
+### 12.8 宿主子代理定义（第 0 步的核实结果）
+
+【实测】宿主从 `~/.zcode/agents` 与 `<工作目录>/.zcode/agents` 读 `*.md`，frontmatter 认 `name`、
+`description`（必填）、`tools`、`disallowedTools`、`skills`、`model`、`thoughtLevel`、`maxTurns`、
+`memory`、`background`、`injectAgentsMd`、`mcpServers`；项目级定义不允许设 `permissionMode`。**定义在会话
+启动时载入**，当前会话里新放的定义看不到（实测：放一个探针定义后 Agent 工具报「Agent type not found」）。
+
+所以投影器生成九份 `.zcode/agents/<host_name>.md`，但**自动派工的冒烟要等下一次新会话**才能做。这一版先把
+人工派工路径走通：`wf next` → `wf brief --out` → 把简报交给层 agent → `wf gate` + `wf run-log` → 给人看卡片。
+
+### 12.9 验证
+
+- 【实测】回归 178 条全过（原 158 + 新增 20）：定义通过 schema 与交叉校验、guide 带 agent 正文、L5 的
+  rtl skill 与 caselaw、宿主投影九份且调度 agent 无写权限、投影与源一致、简报留档与指纹、回读留痕、执行
+  记录、层 agent 被拒的四种人动作、层 agent 的 decide 被强制待批、状态导出 0.5 的 agent、坏定义被拒。
+- 【实测】命令行冒烟通过（新增第 10 步，含留档、回读、执行记录、拦截）；引擎自检 15/15；类型检查零错误。
+- 【实测】隔离副本上浏览器实测：流程页的 agent 表（8 行，L5 显示 rtl skill 与 caselaw）、框上的 agent 名、
+  层详情的 agent 栏与完整定义展开、点「留档」页头出现简报时间、执行记录出现在页头、证据页显示「另读」。
+- 【实测】真实 store 没有被写过：层包与决策的修改时间仍停在 2026-11-19 11:57，指纹与动手前一致。
+
+### 12.10 未做与遗留
+
+- **自动派工没冒烟**：宿主定义要新会话才载入，下一次开新会话时用 `sim-layer-l1` 走一层。
+- **独立验证面仍未纳入**：方案给了八个执行 agent 与一个调度 agent，没有验证 agent；测试仍由做这一层的
+  agent 自己写，V0 风险（生成者自测容易与实现共享误解）还在。这是用户批准时明确不纳入的两点之一
+  （方案 ORCH-Q-001），留作后续独立设计。
+- **演进中心仍缺可版本化的对象**：现在 agent 定义成了文件，演进中心有了可以对版本化的东西，但这一版没接。
+- **按层选模型没接**：宿主支持 `model` 与 `thoughtLevel`，但方案第 5 条假设把这一项留到以后。
+- **工具边界只是「声明 + 尽力拦截」加宿主 tools 限制**，不是硬隔离。
+- 旧包没有开工简报、回读记录与执行记录，界面如实显示「还没有留档」。

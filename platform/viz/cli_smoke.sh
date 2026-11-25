@@ -6,7 +6,8 @@ set -u
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 SBX=$(mktemp -d /tmp/wf-cli-sbx-XXXXXX)
 mkdir -p "$SBX/platform"
-for n in tools schemas store; do cp -r "$REPO/platform/$n" "$SBX/platform/$n"; done
+for n in tools schemas store agents; do cp -r "$REPO/platform/$n" "$SBX/platform/$n"; done
+cp -r "$REPO/.agents" "$SBX/.agents"
 cp -r "$REPO/domains" "$SBX/domains"
 cp -r "$REPO/tasks" "$SBX/tasks"
 find "$SBX" -name __pycache__ -type d -prune -exec rm -rf {} +
@@ -179,7 +180,32 @@ t = next(t for t in d["tasks"] if t["task_id"] == "TASK-sme2-flow1")
 print("  sme2 迭代完成标志:", [(i["label"], i["complete"]) for i in t["iterations"]])
 ' || echo "state-export consistency check failed" >> "$SBX/.fail"
 
-step "10. selftest"
+step "10. 层 agent：定义、开工简报留档、回读留痕、执行记录、拦截"
+WFR guide | grep -q '观测 agent' && echo "  ✓ wf guide 列出每层的 agent 与工具包"
+WFR next | grep -q '开工简报：wf brief' && echo "  ✓ wf next 直接给出开工命令"
+WFR brief "$L1" --out --by tester > /dev/null && test -f "$SBX/domains/general/L1_observation/$L1/brief.md" && echo "  ✓ 开工简报留档：brief.md 落盘"
+python3 -I - "$SBX" "$L1" <<'EOF'
+import hashlib, json, sys, glob
+sbx, pkg = sys.argv[1], sys.argv[2]
+env = json.load(open(glob.glob(sbx + '/domains/*/*/' + pkg + '/envelope.json')[0], encoding='utf-8'))
+rec = (env.get('provenance') or {}).get('brief') or {}
+md = open(glob.glob(sbx + '/domains/*/*/' + pkg + '/brief.md')[0], 'rb').read()
+ok = rec.get('by') == 'tester' and rec.get('sha256') == hashlib.sha256(md).hexdigest()[:16]
+print('  %s 回执记下署名与简报指纹' % ('✓' if ok else '✗'))
+if not ok: print('bad brief receipt')
+EOF
+WFR show "$L1" --for "$L2" --by tester > /dev/null && echo "  ✓ 另读上游留痕（wf show --for）"
+WFR run-log --pkg "$L2" --agent tester --model test-model --duration 5 > /dev/null && echo "  ✓ 执行记录入册（wf run-log）"
+expect_reject "层 agent 不能批准" "人的动作" env WF_ACTOR=layer:L1 python3 "$SBX/platform/tools/wf.py" --root "$SBX" approve DEC-x --as tester
+expect_reject "层 agent 不能作废" "人的动作" env WF_ACTOR=layer:L1 python3 "$SBX/platform/tools/wf.py" --root "$SBX" invalidate "$L1" --reason x
+WF_ACTOR=layer:L1 WFR decide --pkg "$L1" --type select --summary "层 agent 记一条" --confidence high --reviewer tester > /dev/null && python3 -I - "$SBX" <<'EOF'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1] + '/platform/store/index/decisions.jsonl') if l.strip()]
+d = [x for x in rows if x.get('summary') == '层 agent 记一条'][-1]
+print('  %s 层 agent 记决定被强制成待批（reviewer=pending-user）' % ('✓' if d['reviewer'] == 'pending-user' else '✗'))
+EOF
+
+step "11. selftest"
 WF 1 selftest
 
 echo

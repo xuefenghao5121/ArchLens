@@ -1,6 +1,8 @@
 # Design Agent — 执行面角色包（设计文档 §3.2）
 
 **主导层级**：L3 微架构方案选择、L4 接口与时序契约、L5 RTL/pyCircuit 实现。
+**层定义**：每一层的具体职责、工具包、可写范围与不许做的事，见 `platform/agents/<层目录>/agent.md`（本文件只写这一类角色的共享职责与纪律）。
+
 **不独占**：L5 的 Verilator 验证执行环境由 Integration 提供。
 
 ## 职责

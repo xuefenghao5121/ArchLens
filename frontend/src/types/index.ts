@@ -97,6 +97,31 @@ export interface EvidenceLine {
   cited?: boolean
 }
 
+/** 层 agent 定义：谁做这一层、用什么、能写哪里、不许做什么 */
+export interface AgentSkill { name: string; what: string }
+
+export interface LayerAgent {
+  name: string
+  host_name: string
+  role: string
+  role_label: string
+  // platform/agents/<层>/agent.md
+  file: string
+  skills: AgentSkill[]
+  tools: AgentSkill[]
+  writes: string[]
+  must_not: string[]
+  // 完整定义正文（只有 /api/guide 带）
+  body?: string
+}
+
+/** 开工简报的回执：wf brief --out 写下时记 */
+export interface BriefReceipt { at: string; by: string; sha256: string; upstream: string[] }
+/** 接口卡之外另读上游的记录 */
+export interface PullRecord { pkg: string; at: string; by: string }
+/** 执行记录：谁、用什么模型、跑了多久 */
+export interface RunRecord { at: string; agent: string; model?: string; duration_s?: number | null; note?: string }
+
 /** 每层的固定说明（界面与 wf brief 共用一份） */
 export interface LayerGuide {
   question: string
@@ -109,6 +134,8 @@ export interface LayerGuide {
   human: boolean
   needs_test: boolean
   deliverables: string[]
+  // 这一层由哪个 agent 做
+  agent?: LayerAgent
 }
 
 export interface LayerCard {
@@ -134,6 +161,9 @@ export interface LayerCard {
   reproduce_command: string
   parents: string[]
   parents_derived: boolean
+  // 开工简报、另读上游、执行记录
+  context: { brief: BriefReceipt | null; pulls: PullRecord[] }
+  runs: RunRecord[]
   // 核对通过之后接口卡又改过
   interface_drift: boolean
   artifact_count: number
@@ -166,6 +196,8 @@ export interface FlowNode {
   own: string[]
   reused: string[]
   state: StateWord
+  // 这一层由哪个 agent 做
+  agent?: string | null
 }
 
 export interface TaskReceipt {
@@ -292,6 +324,8 @@ export interface GuideResponse {
   strength: Record<string, string>
   states: StateWord[]
   interface: { limits: Record<string, number>; gives_max: number }
+  // 调度 agent：只派工与核对，不做层内工作
+  orchestrator: LayerAgent
 }
 
 // ---- 演进中心（不在这一轮改动范围）----
@@ -360,6 +394,7 @@ export type ActionId =
   | 'approve' | 'reject' | 'rollback'
   | 'bench_import' | 'task_new' | 'iter_new' | 'new_pkg'
   | 'iter_seal' | 'iter_abort' | 'task_seal'
+  | 'brief_out' | 'run_log'
 
 export interface ActionRequest {
   action: ActionId
@@ -395,6 +430,10 @@ export interface ActionRequest {
   task?: string
   iteration?: string
   layer?: string
+  // brief_out：造包人署名；run_log：模型与耗时（秒）
+  by?: string
+  model?: string
+  duration?: number
   // 操作人：执行这次请求的 agent 或人，写进证据图与生命周期历史
   agent?: string
   idempotency_key?: string

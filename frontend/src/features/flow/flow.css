@@ -70,3 +70,12 @@
 .flow-progress { font-size: 14px; }
 .flow-progress[data-complete='true'] { color: var(--success); font-weight: 600; }
 .flow-stuck { margin: 4px 2px 0; }
+
+/* ---- 每一层由谁做、用什么 ---- */
+.flow-agents { margin-bottom: 12px; }
+.agent-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.agent-table th, .agent-table td { border-bottom: 1px solid var(--line); padding: 6px 8px; text-align: left; vertical-align: top; }
+.agent-table th { color: var(--muted); font-weight: 500; font-size: 11px; }
+.agent-table td .tag { margin-right: 4px; }
+.agent-name { font-weight: 600; }
+.fnode-agent { color: var(--muted); font-weight: 400; font-size: 11px; margin-left: 6px; }

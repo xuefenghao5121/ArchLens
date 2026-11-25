@@ -44,6 +44,36 @@ function GuideBlock({ g }: { g: LayerGuide }) {
   )
 }
 
+/** 这一层的 agent：谁做、用什么、能写哪里、不许做什么；可展开完整定义 */
+function AgentBlock({ agent }: { agent?: import('../../types').LayerAgent }) {
+  if (!agent) return null
+  return (
+    <>
+      <div className="block-k">这一层的 agent</div>
+      <div className="agent-card">
+        <div className="agent-head">
+          <strong>{agent.name}</strong>
+          <span className="muted small">{agent.host_name} · {agent.role_label}</span>
+        </div>
+        <div className="agent-line"><span className="muted">skills：</span>
+          {agent.skills.map((x) => <span key={x.name} className="tag" title={x.what}>{x.name}</span>)}
+        </div>
+        <div className="agent-line"><span className="muted">tools：</span>
+          {agent.tools.map((x) => <span key={x.name} className="tag" title={x.what}>{x.name}</span>)}
+        </div>
+        <div className="agent-line"><span className="muted">可写：</span>{agent.writes.join('；')}</div>
+        <div className="agent-line"><span className="muted">不许：</span>{agent.must_not.join('；')}</div>
+        {agent.body && (
+          <details className="agent-body">
+            <summary>展开完整定义（platform/agents/…/agent.md）</summary>
+            <pre className="brief">{agent.body}</pre>
+          </details>
+        )}
+      </div>
+    </>
+  )
+}
+
 /** 人的决定窗口：待人决定的事项在这里批准或驳回；也可以直接记一个署名的决定 */
 function DecisionWindow({ pkg, card, onNotice }: { pkg: string; card: LayerCard; onNotice: (n: Notice) => void }) {
   const [agent] = useOperator()
@@ -279,6 +309,15 @@ function Detail({ pkg }: { pkg: string }) {
     setNotice({ kind: 'ok', title: `已作废 ${n} 个包（含本包）。原因已留痕：${why}` })
   }
 
+  const onArchiveBrief = async () => {
+    setNotice(null)
+    if (!agent.trim()) { setFormError('请先在右上角填写操作人——留档要署名'); return }
+    const resp = await run({ action: 'brief_out', pkg, by: agent.trim(), agent: agent.trim() })
+    if (!resp.ok) { setFormError(actionError(resp)); return }
+    setFormError('')
+    setNotice({ kind: 'ok', title: `简报已留档（指纹 ${String(resp.result?.sha256 ?? '')}）` })
+  }
+
   const onBrief = async () => {
     if (panel === 'brief') { setPanel(null); return }
     open('brief')
@@ -291,6 +330,8 @@ function Detail({ pkg }: { pkg: string }) {
   const upstream = takes.length
     ? takes.map((t) => ({ id: t.from, text: `${taskPkgs.get(t.from)?.layer ?? ''} ${LAYER_NAME[taskPkgs.get(t.from)?.layer ?? ''] ?? ''} 的 ${t.statement}` }))
     : c.parents.map((id) => ({ id, text: `${taskPkgs.get(id)?.layer ?? ''} ${LAYER_NAME[taskPkgs.get(id)?.layer ?? ''] ?? ''}` }))
+  const fullAgent = guide?.layers.find((l) => l.layer === c.layer)?.agent
+  const lastRun = c.runs[c.runs.length - 1]
   const tests = c.evidence.filter((e) => e.kind === 'test')
   const arts = c.evidence.filter((e) => e.kind === 'artifact')
   const raw = data.raw
@@ -303,7 +344,8 @@ function Detail({ pkg }: { pkg: string }) {
           <button className="tf-btn primary" disabled={busy} onClick={onCheck}>核对</button>
           <button className="tf-btn" disabled={busy} onClick={() => open(panel === 'propose' ? null : 'propose')}>提请决定</button>
           <button className="tf-btn danger" disabled={busy} onClick={() => open(panel === 'revise' ? null : 'revise')}>作废并重做</button>
-          <button className="tf-btn" onClick={onBrief}>{panel === 'brief' ? '收起简报' : '给 agent 的简报'}</button>
+          <button className="tf-btn" onClick={onBrief}>{panel === 'brief' ? '收起简报' : '开工简报'}</button>
+          <button className="tf-btn" disabled={busy} onClick={onArchiveBrief}>留档</button>
         </div>
       </div>
 
@@ -318,6 +360,17 @@ function Detail({ pkg }: { pkg: string }) {
           {c.iteration_label && <span>{c.iteration_label}</span>}
           {taskTitle && <span>任务：{taskTitle}</span>}
           {c.owner && <span>负责：{c.owner}</span>}
+          {c.context.brief
+            ? <span>开工简报：{fmtTime(c.context.brief.at)}（{c.context.brief.by}）</span>
+            : <span>开工简报：还没有留档</span>}
+          {c.context.pulls.length > 0 && <span>另读上游 {c.context.pulls.length} 处</span>}
+          {lastRun && (
+            <span>
+              上次执行：{lastRun.agent}
+              {lastRun.model ? ` · ${lastRun.model}` : ''}
+              {lastRun.duration_s != null ? ` · ${lastRun.duration_s}s` : ''}
+            </span>
+          )}
           <span className="mono">{c.package_id}</span>
         </div>
       </header>
@@ -379,7 +432,10 @@ function Detail({ pkg }: { pkg: string }) {
       {panel === 'brief' && (
         <div className="inline-form">
           <strong className="small">给这一层 agent 的工作简报</strong>
-          <div className="form-hint">含任务目标原话、这一层要交什么、上游卡片上的结论和证据、接口卡的写法。复制给做这一层的 agent。</div>
+          <div className="form-hint">
+            给这一层 agent 的全部内容：任务目标原话、这一层要交什么、上游卡片上的结论和证据、接口卡的写法。
+            「留档」会把它写成这个包目录下的 brief.md，并记下时间、署名、指纹与所含上游；之后就能查到这一层开工时拿到了什么。
+          </div>
           {brief
             ? (
               <>
@@ -403,6 +459,7 @@ function Detail({ pkg }: { pkg: string }) {
           <div style={{ marginTop: 16 }}>
             <GuideBlock g={g} />
           </div>
+          <AgentBlock agent={fullAgent ?? c.guide.agent} />
         </section>
 
         {/* 交付 */}

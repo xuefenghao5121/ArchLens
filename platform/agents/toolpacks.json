@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "description": "工具包清单：agent 定义里的 tools 只能引用这里的包名，引擎加载定义时核对。命令都是本仓已有的；领域相关的命令不在这里硬写，指向领域的 environment.md。",
+  "packs": {
+    "wf:core": {
+      "what": "登记证据、核对本层",
+      "commands": ["wf register-artifact", "wf register-git", "wf test-register", "wf gate", "wf card", "wf show"]
+    },
+    "wf:read": {
+      "what": "只读查看状态与简报",
+      "commands": ["wf brief", "wf next", "wf status", "wf walk", "wf guide"]
+    },
+    "wf:dispatch": {
+      "what": "调度与收工核对（只给调度 agent）",
+      "commands": ["wf next", "wf brief --out", "wf gate", "wf run-log", "wf card", "wf task-list", "wf task-show"]
+    },
+    "caselaw": {
+      "what": "判例库情境检索：开工时与每次失败时按报错签名检索",
+      "commands": ["python3 platform/tools/caselaw.py search"]
+    },
+    "sim:gem5-run": {
+      "what": "gem5 仿真运行与统计采集",
+      "ref": "domains/<领域>/environment.md"
+    },
+    "sim:gem5-build": {
+      "what": "gem5 构建（含 RTL 挂钩与独立构建目录）",
+      "ref": "domains/<领域>/environment.md"
+    },
+    "kernel:toolchain": {
+      "what": "内核汇编与链接（aarch64-linux-gnu-as / ld）",
+      "ref": "domains/<领域>/environment.md"
+    },
+    "rtl:pycircuit-verilator": {
+      "what": "RTL 工程构建与自测（pyCircuit / Verilator，含版本锁）",
+      "ref": "domains/<领域>/environment.md"
+    }
+  }
+}

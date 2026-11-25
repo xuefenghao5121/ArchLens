@@ -39,7 +39,7 @@ target_version（store_env_hash）做乐观并发校验（可选，界面始终�
 写操作端点（POST，application/json）：
     /api/action    body = { action, ..., idempotency_key?, agent?, target_version? }
 
-    十七种动作：
+    十九种动作：
       inspect  只读（等价 GET /api/package/<pkg>）
       ask      生成工作简报（wf brief：目标原话、本层说明、上游卡片）
       propose  提请决定：写待批事项（reviewer 固定 pending-user；批准只走 approve；须带 summary 一句话结论；
@@ -57,6 +57,8 @@ target_version（store_env_hash）做乐观并发校验（可选，界面始终�
       new_pkg      给流程里还没开始的一个框生成本层的层包
       iter_seal / iter_abort  结束 / 终止一轮迭代（须署名 as 与理由 reason）
       task_seal    封板（须署名 as 与理由 reason）
+      brief_out    开工简报留档：{pkg, by} 写成 <包目录>/brief.md，并把指纹与上游记进信封
+      run_log      记一条执行记录：{pkg, agent, model?, duration?, note?}
 """
 import argparse
 import contextlib
@@ -157,16 +159,24 @@ def templates():
 
 
 def guide():
-    """每层的固定说明（界面与 wf brief 共用这一份），以及几个标记的人读含义。"""
+    """每层的固定说明（界面与 wf brief 共用这一份）、每层的 agent 定义，以及几个标记的人读含义。
+    agent 带正文：界面可以展开完整定义，人看得到这一层要做什么、用什么、不许做什么。"""
     wfmod, w = _import_wf()
+    defs = wfmod.agent_defs()
     layers = []
     for L, g in wfmod.LAYER_GUIDE.items():
+        a = defs["layers"][L]
         layers.append({"layer": L, "name": g["name"], "question": g["question"], "role": g["role"],
                        "role_label": wfmod.ROLE_LABEL.get(g["role"], g["role"]),
-                       "skills": g["skills"], "consumes": g["consumes"], "produces": g["produces"],
+                       "skills": list(a.get("skills", [])), "consumes": g["consumes"],
+                       "produces": g["produces"],
                        "human": bool(g["human"]), "needs_test": bool(g["needs_test"]),
-                       "deliverables": [name for name, _ in g["deliverables"]]})
-    return {"layers": layers, "truth": wfmod.TRUTH_LABEL, "frames": wfmod.FRAME_LABEL,
+                       "deliverables": [name for name, _ in g["deliverables"]],
+                       "agent": dict(wfmod.agent_summary(a), body=a["body"])})
+    orch = defs["orchestrator"]
+    return {"layers": layers,
+            "orchestrator": dict(wfmod.agent_summary(orch), body=orch["body"]),
+            "truth": wfmod.TRUTH_LABEL, "frames": wfmod.FRAME_LABEL,
             "strength": wfmod.STRENGTH_LABEL, "states": wfmod.STATE_ORDER,
             "interface": {"limits": wfmod.IFACE_LIMITS, "gives_max": wfmod.IFACE_GIVES_MAX}}
 
@@ -523,6 +533,27 @@ def _h_task_seal(w, wfmod, p):
     return {"task_id": task, "status": "sealed", "signed_by": user, "reason": reason}
 
 
+def _h_brief_out(w, wfmod, p):
+    """开工简报留档：把这一层的简报写成 <包目录>/brief.md，并在信封里记时间、署名、指纹与上游。"""
+    ref = p.get("pkg") or p.get("ref")
+    if not ref:
+        raise SystemExit("brief_out 需要 pkg 参数")
+    _pkg_by_id(w, ref)
+    by = (p.get("by") or _agent(p) or "").strip()
+    return _call(wfmod.cmd_brief, w, _make_ns(pkg=ref, out=True, by=by))
+
+
+def _h_run_log(w, wfmod, p):
+    """记一条执行记录：谁、用什么模型、跑了多久。只记事实，不判断好坏。"""
+    ref = p.get("pkg") or p.get("ref")
+    if not ref:
+        raise SystemExit("run_log 需要 pkg 参数")
+    _pkg_by_id(w, ref)
+    return _call(wfmod.cmd_run_log, w, _make_ns(
+        pkg=ref, agent=_agent(p), model=p.get("model") or "",
+        duration=p.get("duration"), note=p.get("note") or ""))
+
+
 HANDLERS = {
     "inspect": _h_inspect,
     "ask": _h_ask,
@@ -541,6 +572,8 @@ HANDLERS = {
     "iter_seal": _h_iter_seal,
     "iter_abort": _h_iter_abort,
     "task_seal": _h_task_seal,
+    "brief_out": _h_brief_out,
+    "run_log": _h_run_log,
 }
 
 

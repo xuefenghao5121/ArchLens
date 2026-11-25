@@ -1,0 +1,17 @@
+{
+  "$id": "layer_agent",
+  "title": "层 agent 定义（platform/agents/<层>/agent.md 的 frontmatter）",
+  "description": "每一层一个 agent 定义，是「谁做这一层、用什么做、能写哪里、不许做什么」的单一来源。frontmatter 是 YAML 的一个子集：标量，或写成 JSON 数组的列表。正文是人读的职责、步骤、完成标准与纪律。tools 只能引用 platform/agents/toolpacks.json 里的包名；skills 必须是磁盘上存在的 skill 目录名。",
+  "type": "object",
+  "required": ["name", "host_name", "role", "skills", "tools", "writes", "must_not"],
+  "properties": {
+    "layer": {"type": "string", "enum": ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "orchestrator"]},
+    "name": {"type": "string", "minLength": 1},
+    "host_name": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+    "role": {"type": "string", "enum": ["profiling", "design", "integration", "orchestrator"]},
+    "skills": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "tools": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "writes": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "must_not": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+  }
+}

@@ -48,9 +48,11 @@ def store_fingerprint():
 
 def build_sandbox(root):
     (root / "platform").mkdir(parents=True)
-    for name in ("tools", "schemas", "store"):
+    for name in ("tools", "schemas", "store", "agents"):
         shutil.copytree(REPO / "platform" / name, root / "platform" / name,
                         ignore=shutil.ignore_patterns("__pycache__", "idempotency.jsonl"))
+    # agent 定义会核对 skills 在不在磁盘上；沙箱里也给一份
+    shutil.copytree(REPO / ".agents", root / ".agents")
     (root / "platform" / "viz").mkdir()
     shutil.copy2(REPO / "platform" / "viz" / "server.py", root / "platform" / "viz" / "server.py")
     shutil.copytree(REPO / "domains", root / "domains")
@@ -99,8 +101,8 @@ class Ctx:
     def get(self, path):
         return self.req("GET", path)[1]
 
-    def wf(self, *args):
-        env = dict(os.environ, WF_ROOT=str(self.root))
+    def wf(self, *args, extra_env=None):
+        env = dict(os.environ, WF_ROOT=str(self.root), **(extra_env or {}))
         p = subprocess.run([PY, str(self.root / "platform" / "tools" / "wf.py"), *args],
                            capture_output=True, text=True, env=env, cwd=self.root, timeout=180)
         return p.returncode, (p.stdout + p.stderr).strip()
@@ -210,7 +212,7 @@ def run(ctx: Ctx):
               all("package_ids" in d and "task_id" in d and "summary" in d and "headline" in d
                   for d in s["pending_decisions"]))
     ctx.check("store 信息如实暴露",
-              s["store_isolated"] is True and s["store_root"] == str(ctx.root) and s["schema_version"] == "0.4")
+              s["store_isolated"] is True and s["store_root"] == str(ctx.root) and s["schema_version"] == "0.5")
     ctx.check("幽灵 ID 标为 dangling_ref，不冒充层包",
               any(n["kind"] == "dangling_ref" for n in sme2["dag"]["nodes"])
               and not any(n["kind"] == "layer_package" and n["layer"] is None for n in sme2["dag"]["nodes"]))
@@ -785,6 +787,91 @@ def run(ctx: Ctx):
               j.get("ok") and tn["status"] == "sealed" and any(r["kind"] == "封板" for r in tn["receipts"]), str(tn["receipts"]))
     rc, out = ctx.wf("state-export")
     ctx.check("以上操作之后 state-export 仍通过机器契约自校验", rc == 0, out[-200:])
+
+    print("R16 层 agent 定义：guide / 开工简报留档 / 回读留痕 / 执行记录 / 层 agent 不能替人签字 / 宿主投影")
+    g = ctx.get("/api/guide")
+    ags = [l.get("agent") or {} for l in g["layers"]]
+    ctx.check("/api/guide：八层各带 agent 定义与正文",
+              len(ags) == 8 and all(a.get("name") and a.get("host_name") and a.get("body") for a in ags),
+              str([(a.get("name"), len(a.get("body") or "")) for a in ags])[:200])
+    orc = g.get("orchestrator") or {}
+    ctx.check("/api/guide：调度 agent 也在，且正文写明不做层内工作",
+              bool(orc.get("name")) and "不做任何一层的层内工作" in (orc.get("body") or ""), str(orc.get("name")))
+    l5 = next(l for l in g["layers"] if l["layer"] == "L5")
+    ctx.check("L5 挂上了 rtl 判例 skill 与 caselaw 工具包（此前漏挂）",
+              "rtl-generation-discipline" in [x["name"] for x in l5["agent"]["skills"]]
+              and "caselaw" in [x["name"] for x in l5["agent"]["tools"]], str(l5["agent"]["skills"]))
+    ctx.check("每层定义都写清 skills / tools / 可写范围 / 不许做的事",
+              all(a.get("skills") and a.get("tools") and a.get("writes") and a.get("must_not") for a in ags + [orc]))
+    ctx.check("skills 与工具包都有一句用途（界面上的悬浮提示）",
+              all(x.get("what") for a in ags + [orc] for x in a.get("skills", []) + a.get("tools", [])))
+    zc = sorted(p.name for p in (REPO / ".zcode" / "agents").glob("*.md"))
+    ctx.check("宿主投影：.zcode/agents 下九份定义", len(zc) == 9 and "sim-orchestrator.md" in zc, str(zc))
+    orc_txt = (REPO / ".zcode" / "agents" / "sim-orchestrator.md").read_text(encoding="utf-8")
+    ctx.check("调度 agent 的宿主定义不给写文件能力（tools 里没有 Write/Edit）",
+              "tools: Read, Bash, Glob, Grep" in orc_txt and "Write" not in orc_txt.split("---")[1])
+    pr = subprocess.run([PY, str(REPO / "platform" / "tools" / "bind_hosts.py"), "--check"],
+                        capture_output=True, text=True, cwd=REPO, timeout=120)
+    ctx.check("投影与源一致（bind_hosts --check）", pr.returncode == 0, (pr.stdout + pr.stderr)[-160:])
+
+    if j.get("ok"):
+        st, jb = ctx.post({"action": "brief_out", "pkg": L1N, "by": "回归员"})
+        bmd = ctx.root / "domains" / "general" / "L1_observation" / L1N / "brief.md"
+        env_b = ctx.env(L1N)
+        rec = (env_b.get("provenance") or {}).get("brief") or {}
+        ctx.check("开工简报留档：brief.md 落盘，回执记时间 / 署名 / 指纹 / 上游",
+                  jb.get("ok") and bmd.exists()
+                  and rec.get("by") == "回归员" and len(rec.get("sha256", "")) == 16
+                  and hashlib.sha256(bmd.read_bytes()).hexdigest()[:16] == rec.get("sha256")
+                  and rec.get("upstream") == [], str(jb)[:160])
+        c1 = ctx.get("/api/package/" + L1N)["card"]
+        ctx.check("卡片带 context.brief（界面上的「开工简报」一行）",
+                  (c1["context"]["brief"] or {}).get("by") == "回归员")
+        rc, out = ctx.wf("show", L1N, "--for", L2N, "--by", "回归员")
+        c2 = ctx.get("/api/package/" + L2N)["card"]
+        ctx.check("接口卡之外另读上游：show --for 留痕，卡片上看得到",
+                  rc == 0 and len(c2["context"]["pulls"]) == 1
+                  and c2["context"]["pulls"][0]["pkg"] == L1N
+                  and c2["context"]["pulls"][0]["by"] == "回归员", out[-120:])
+        rc, out = ctx.wf("run-log", "--pkg", L2N, "--agent", "回归员", "--model", "glm-5.4", "--duration", "42")
+        c2 = ctx.get("/api/package/" + L2N)["card"]
+        r0 = (c2["runs"] or [{}])[-1]
+        ctx.check("执行记录：谁 / 模型 / 耗时，进卡片",
+                  rc == 0 and r0.get("agent") == "回归员" and r0.get("model") == "glm-5.4"
+                  and r0.get("duration_s") == 42, out[-120:])
+
+        rc, out = ctx.wf("approve", "DEC-nope", "--as", "x", extra_env={"WF_ACTOR": "layer:L2"})
+        ctx.check("层 agent 不能批准（WF_ACTOR=layer:*）", rc != 0 and "人的动作" in out, out[:120])
+        rc, out = ctx.wf("reject", "DEC-nope", "--as", "x", "--reason", "x", extra_env={"WF_ACTOR": "layer:L2"})
+        ctx.check("层 agent 不能驳回", rc != 0 and "人的动作" in out, out[:120])
+        rc, out = ctx.wf("invalidate", L1N, "--reason", "x", extra_env={"WF_ACTOR": "layer:L2"})
+        ctx.check("层 agent 不能作废", rc != 0 and "人的动作" in out, out[:120])
+        rc, out = ctx.wf("gate", L1N, "--override", "--as", "x", "--reason", "x",
+                         extra_env={"WF_ACTOR": "layer:L2"})
+        ctx.check("层 agent 不能署名覆盖", rc != 0 and "人的动作" in out, out[:120])
+        rc, out = ctx.wf("decide", "--pkg", L2N, "--type", "select", "--summary", "层 agent 记一条",
+                         "--confidence", "high", "--reviewer", "huawei", extra_env={"WF_ACTOR": "layer:L2"})
+        decs = [json.loads(l) for l in (ctx.root / "platform/store/index/decisions.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+        made = [d for d in decs if d.get("summary") == "层 agent 记一条"]
+        ctx.check("层 agent 记决定被强制成待批（reviewer 不能填真人名）",
+                  rc == 0 and made and made[-1]["reviewer"] == "pending-user", str(made[-1:])[:120])
+
+        sv = ctx.get("/api/state")
+        nodes = [n for t in sv["tasks"] for i in t["iterations"] for n in i["nodes"]]
+        byname = {l["layer"]: l["agent"]["name"] for l in g["layers"]}
+        ctx.check("状态导出 0.5：每个框带 agent，且与定义一致",
+                  sv["schema_version"] == "0.5"
+                  and all(n.get("agent") == byname[n["layer"]] for n in nodes), str(nodes[:1]))
+
+        bad = ctx.root / "platform" / "agents" / "L5_rtl" / "agent.md"
+        orig = bad.read_text(encoding="utf-8")
+        bad.write_text(orig.replace('"caselaw"', '"caselaw-nope"'), encoding="utf-8")
+        rc, out = ctx.wf("guide")
+        bad.write_text(orig, encoding="utf-8")
+        ctx.check("定义里引用了不存在的工具包 → 直接报错，不静默降级",
+                  rc != 0 and "caselaw-nope" in out and "工具包清单" in out, out[:160])
+        rc, out = ctx.wf("guide")
+        ctx.check("恢复定义后 guide 正常", rc == 0, out[:80])
 
     print("R9 引擎自检")
     rc, out = ctx.wf("selftest")

@@ -28,16 +28,31 @@ function Trace({ card, pkgOf }: { card: LayerCard; pkgOf: (id: string) => LayerP
   const ups = takes.length
     ? takes.map((t) => ({ id: t.from, text: `${name(t.from)} 的 ${t.statement}` }))
     : card.parents.map((id) => ({ id, text: name(id) }))
-  if (!ups.length) return null
+  if (!ups.length && !card.context.pulls.length) return null
   return (
     <div className="evb-trace">
-      <span className="ev-k">用了上游的{!takes.length && card.parents_derived ? '（按流程顺序推得）' : ''}：</span>
-      {ups.map((u) => (
-        <Link key={u.id} to={layerHref(u.id)} className="evb-up">
-          {u.text}
-          {pkgOf(u.id) && <StateChip word={pkgOf(u.id)!.state} small />}
-        </Link>
-      ))}
+      {ups.length > 0 && (
+        <>
+          <span className="ev-k">用了上游的{!takes.length && card.parents_derived ? '（按流程顺序推得）' : ''}：</span>
+          {ups.map((u) => (
+            <Link key={u.id} to={layerHref(u.id)} className="evb-up">
+              {u.text}
+              {pkgOf(u.id) && <StateChip word={pkgOf(u.id)!.state} small />}
+            </Link>
+          ))}
+        </>
+      )}
+      {card.context.pulls.length > 0 && (
+        <>
+          <span className="ev-k">另读：</span>
+          {card.context.pulls.map((p) => (
+            <Link key={p.pkg + p.at} to={layerHref(p.pkg)} className="evb-up" title={`${p.by} ${fmtTime(p.at)}`}>
+              {p.pkg.replace(/^PKG-L\dd?-[^-]+-/, '')}
+              <span className="muted small">{p.by} {fmtTime(p.at)}</span>
+            </Link>
+          ))}
+        </>
+      )}
     </div>
   )
 }

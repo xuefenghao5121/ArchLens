@@ -30,8 +30,9 @@ cd frontend && npm install && npm run dev
 1. **研究总览**看有哪些任务、哪些事等你决定。
 2. **流程编排**选任务与迭代：页面上是一串框，每个框是一类 agent 的一次工作，箭头表示上游交给
    下游的结论和证据。页首写明编排的是什么，页尾是本轮进度（本轮完成 = 每个框都已验证）。
-3. 点任一框进入**层详情**：先看目标（任务原话）和这一层是什么，再看它交给下游的几条结论与
-   证据；信息交给下游之前，在「人的决定」里签字。动作只有三个：核对、提请决定、作废并重做。
+3. 点任一框进入**层详情**：先看目标（任务原话）、这一层是什么、**这一层的 agent**（谁做、用什么
+   工具包、能写哪里、不许做什么），再看它交给下游的几条结论与证据；信息交给下游之前，在「人的决定」
+   里签字。动作只有三个：核对、提请决定、作废并重做；另可「开工简报」与「留档」。
 4. **证据与回溯**按同一轮从上往下读：每层的结论与证据，以及它用了上游的哪几条（点一下回去）。
 
 把某一层的工作交给 agent：在层详情点「给 agent 的简报」，复制给做这一层的 agent。agent 交付后
@@ -42,13 +43,22 @@ cd frontend && npm install && npm run dev
 | 路由 | 页面 | 数据源 | 说明 |
 |---|---|---|---|
 | `/` | 研究总览 | `/api/state` | 等你决定的事项（可跳转）；任务清单：目标原话、流程、各轮进展、任务级决定回执 |
-| `/flow` | 流程编排 | `/api/state` `/api/guide` `/api/templates` | 所选迭代的模板节点（框），状态词 + 本层要回答的问题 + 第一条结论；开下一轮 / 结束或终止本轮 / 封板 |
-| `/layer/<包>` | 层详情（不进侧栏） | `/api/package/<包>` `/api/state` `/api/guide` | 目标 · 交付 · 证据 · 人的决定 四栏，核对回执五行，原始记录默认折叠 |
+| `/flow` | 流程编排 | `/api/state` `/api/guide` `/api/templates` | 「每一层由谁做、用什么」一表（agent / skills / tools / 完成标准）；所选迭代的模板节点（框），状态词 + 本层要回答的问题 + 第一条结论；开下一轮 / 结束或终止本轮 / 封板 |
+| `/layer/<包>` | 层详情（不进侧栏） | `/api/package/<包>` `/api/state` `/api/guide` | 目标 · 交付 · 证据 · 人的决定 四栏，这一层的 agent（可展开完整定义），核对回执五行，开工简报 / 另读 / 上次执行，原始记录默认折叠 |
 | `/layer/new?iteration=…&layer=…` | 还没有层包的框 | 同上 | 先看这一层的说明，点一下生成本层的层包 |
 | `/evidence` | 证据与回溯 | `/api/state` `/api/guide` | 按迭代、按流程顺序的线性阅读；没有图 |
 | `/evolution` | 演进中心 | `/api/evo-state` | Champion/Challenger 指标对比、谱系（本轮未改） |
 
 旧地址 `/layers`、`/decisions` 自动跳转到 `/flow`、`/`。
+
+## 层 agent 与开工简报
+
+流程页的「每一层由谁做、用什么」直接来自 agent 定义（`platform/agents/<层>/agent.md`）。层详情左栏列出
+这一层的 agent：skills 与 tools 悬停显示一句用途，可写范围与「不许做的事」原文列出，能展开完整定义正文。
+
+页头三项说明这一层开工时的上下文：**开工简报**（时间与署名，没有则写「还没有留档」）、**另读上游几处**、
+**上次执行**（agent · 模型 · 时长）。「开工简报」按钮生成给这一层 agent 的全部内容，「留档」把它写成这个包
+目录下的 `brief.md` 并记下指纹——之后能查到这一层开工时拿到的是什么。
 
 ## 状态词
 
@@ -104,10 +114,10 @@ cd frontend && npm install && npm run dev
 GET  /api/state             → 工作流状态（workflow-state schema 0.4：层包带状态词与卡片，迭代带模板节点，任务带回执）
 GET  /api/package/<包>      → 层包详情：卡片 + 原始记录
 GET  /api/templates         → 流程模板
-GET  /api/guide             → 每层固定说明与标记含义
+GET  /api/guide             → 每层固定说明、这一层的 agent 定义（带正文）与调度 agent、标记含义
 GET  /api/benchmarks        → benchmark 全局清单
 GET  /api/evo-state         → 演进状态（含 lineage）
-POST /api/action            → 十七种动作（application/json；跨站请求被服务端拒绝）
+POST /api/action            → 十九种动作（application/json；跨站请求被服务端拒绝）
 ```
 
 ## 目录结构

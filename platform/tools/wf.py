@@ -37,7 +37,9 @@
 
 import argparse
 import collections
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -1136,6 +1138,138 @@ ROLE_LABEL = {"profiling": "观测与归因（profiling）", "design": "方案�
 FRAME_LABEL = {"F0": "仿真器默认参数（未校准）", "F1": "契约拍定参数", "F2": "RTL 实测背书",
                "F3": "解析模型推导"}
 
+# ---- 层 agent 定义：谁做这一层、用什么做、能写哪里、不许做什么（单一来源）----
+# 每层一份 platform/agents/<层目录>/agent.md，另有一份调度 agent。frontmatter 是 YAML 的子集：
+# 标量，或写成 JSON 数组的列表。tools 只能引用 toolpacks.json 里的包名。
+AGENTS_DIR = Path(__file__).resolve().parents[1] / "agents"
+SKILLS_DIR = Path(__file__).resolve().parents[2] / ".agents" / "skills"
+_AGENT_CACHE = {}
+
+
+def _parse_agent_frontmatter(text):
+    """返回 (frontmatter dict, 正文)。frontmatter 只支持「键: 标量」与「键: [..]」两种写法。"""
+    m = re.match(r"^---\n(.*?)\n---\n(.*)$", text, re.S)
+    if not m:
+        return {}, text
+    meta = {}
+    for line in m.group(1).splitlines():
+        row = line.strip()
+        if not row or row.startswith("#"):
+            continue
+        k, _, v = row.partition(":")
+        k, v = k.strip(), v.strip()
+        if not k:
+            continue
+        meta[k] = json.loads(v) if v.startswith("[") else v
+    return meta, m.group(2)
+
+
+def _agent_sig():
+    files = sorted(AGENTS_DIR.glob("*/agent.md")) + [AGENTS_DIR / "toolpacks.json"]
+    return tuple((str(f), f.stat().st_mtime_ns) for f in files if f.exists())
+
+
+def agent_defs():
+    """读九份定义与工具包清单并做一致性校验；按文件修改时间缓存。
+    返回 {"layers": {L1..L8: 定义}, "orchestrator": 定义, "packs": 工具包}。定义有问题直接报错。"""
+    sig = _agent_sig()
+    if _AGENT_CACHE.get("sig") == sig:
+        return _AGENT_CACHE["value"]
+    errs = []
+    packs_path = AGENTS_DIR / "toolpacks.json"
+    if not packs_path.exists():
+        raise SystemExit(f"错误：缺工具包清单：{packs_path}")
+    packs = json.loads(packs_path.read_text(encoding="utf-8")).get("packs", {})
+    for name, pk in packs.items():
+        if not pk.get("what") or not (pk.get("commands") or pk.get("ref")):
+            errs.append(f"toolpacks.{name}：缺 what，或 commands / ref 都没有")
+    schema_path = Path(__file__).resolve().parents[1] / "schemas" / "layer_agent.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    layers, orch, host_names = {}, None, []
+    for p in sorted(AGENTS_DIR.glob("*/agent.md")):
+        meta, body = _parse_agent_frontmatter(p.read_text(encoding="utf-8"))
+        rel = p.relative_to(AGENTS_DIR).as_posix()
+        errs += [f"{rel}: {e}" for e in validate(meta, schema)]
+        if not body.strip():
+            errs.append(f"{rel}: 正文为空——正文是人读的职责、步骤、完成标准与纪律")
+        key = meta.get("layer")
+        entry = dict(meta, body=body.strip(), file=rel)
+        if key == "orchestrator":
+            orch = entry
+        elif key in LAYER_DIR:
+            layers[key] = entry
+        else:
+            errs.append(f"{rel}: layer 须为 L1..L8 或 orchestrator（收到 {key!r}）")
+        host_names.append(meta.get("host_name"))
+        for sk in meta.get("skills", []):
+            if SKILLS_DIR.exists() and not (SKILLS_DIR / str(sk) / "SKILL.md").exists():
+                errs.append(f"{rel}: skills 里的 {sk!r} 在 .agents/skills 里找不到")
+        for t in meta.get("tools", []):
+            if t not in packs:
+                errs.append(f"{rel}: tools 里的 {t!r} 不在工具包清单里")
+    for L in LAYER_DIR:
+        if L not in layers:
+            errs.append(f"缺 {L} 的 agent 定义")
+        elif layers[L].get("role") != LAYER_AGENT[L]:
+            errs.append(f"{layers[L].get('file')}: role={layers[L].get('role')!r} "
+                        f"与 LAYER_AGENT[{L}]={LAYER_AGENT[L]!r} 不一致")
+    if orch is None:
+        errs.append("缺调度 agent 定义（layer: orchestrator）")
+    elif orch.get("role") != "orchestrator":
+        errs.append(f"{orch.get('file')}: role 须为 orchestrator")
+    dup = {h for h in host_names if host_names.count(h) > 1}
+    if dup:
+        errs.append("host_name 重复：" + "、".join(sorted(str(x) for x in dup if x)))
+    if errs:
+        raise SystemExit("层 agent 定义有问题：\n  " + "\n  ".join(errs))
+    value = {"layers": layers, "orchestrator": orch, "packs": packs}
+    _AGENT_CACHE.update(sig=sig, value=value)
+    return value
+
+
+def agent_of(layer):
+    """某一层的 agent 定义（含正文）。调度 agent 用 layer="orchestrator"。"""
+    defs = agent_defs()
+    if layer in defs["layers"]:
+        return defs["layers"][layer]
+    if layer == "orchestrator":
+        return defs["orchestrator"]
+    raise SystemExit(f"错误：没有 {layer} 的 agent 定义")
+
+
+def skill_purpose(name):
+    """skill 的一句话用途：取 SKILL.md frontmatter 里 description 的第一句。"""
+    p = SKILLS_DIR / str(name) / "SKILL.md"
+    if not p.exists():
+        return ""
+    text = p.read_text(encoding="utf-8")
+    m = re.search(r"^description:\s*(.*)$", text, re.M)
+    if not m:
+        return ""
+    parts = [m.group(1).strip().lstrip(">-").strip()]
+    for line in text[m.end():].splitlines():
+        if re.match(r"^[A-Za-z][\w-]*:", line):
+            break
+        if line.strip():
+            parts.append(line.strip())
+    joined = "".join(parts)
+    return _s(re.split(r"[。；;]", joined)[0], 60)
+
+
+def agent_summary(defn):
+    """卡片与界面用的摘要（不含正文）。"""
+    packs = agent_defs()["packs"]
+    return {
+        "name": defn.get("name", ""), "host_name": defn.get("host_name", ""),
+        "role": defn.get("role", ""),
+        "role_label": ROLE_LABEL.get(defn.get("role"), defn.get("role", "")),
+        "file": f"platform/agents/{defn.get('file', '')}",
+        "skills": [{"name": x, "what": skill_purpose(x)} for x in defn.get("skills", [])],
+        "tools": [{"name": x, "what": packs.get(x, {}).get("what", "")} for x in defn.get("tools", [])],
+        "writes": list(defn.get("writes", [])),
+        "must_not": list(defn.get("must_not", [])),
+    }
+
 
 def _n(v):
     """条目数：列表/字典按长度，其他非空算 1。"""
@@ -1220,6 +1354,16 @@ LAYER_GUIDE = {
                 lambda e: _all_keys(e["payload"].get("conclusions"), ("statement",))),
                ("适用范围", lambda e: bool(e["payload"].get("validity_scope")))]},
 }
+
+
+def layer_guide(layer):
+    """LAYER_GUIDE[L] 加上定义里的 skills 与 agent 摘要（界面与 brief 共用这一份）。"""
+    g = dict(LAYER_GUIDE.get(layer, {}))
+    if layer in LAYER_DIR:
+        a = agent_of(layer)
+        g["skills"] = list(a.get("skills", []))
+        g["agent"] = agent_summary(a)
+    return g
 
 
 def interface_hash(env):
@@ -1650,7 +1794,7 @@ def layer_card(w, env, tasks=None, pkg_index=None):
     pkg_index 可由批量调用方传入（包 ID → 信封），省得每张卡都重扫全部层包。"""
     ident = env["identity"]
     layer, pid = ident["layer_id"], ident["package_id"]
-    guide = LAYER_GUIDE.get(layer, {})
+    guide = layer_guide(layer)
     tasks = w.tasks() if tasks is None else tasks
     task, it = w.iteration_of(env, tasks)
     iface = dict(env["interface"]) if isinstance(env.get("interface"), dict) else _project_interface(env)
@@ -1770,8 +1914,12 @@ def layer_card(w, env, tasks=None, pkg_index=None):
                   "skills": guide.get("skills", []), "consumes": guide.get("consumes", ""),
                   "produces": guide.get("produces", ""), "human": bool(guide.get("human")),
                   "needs_test": bool(guide.get("needs_test")),
-                  "deliverables": [name for name, _ in guide.get("deliverables", [])]},
+                  "deliverables": [name for name, _ in guide.get("deliverables", [])],
+                  "agent": guide.get("agent")},
         "interface": iface,
+        "context": {"brief": (env.get("provenance") or {}).get("brief"),
+                    "pulls": (env.get("provenance") or {}).get("context_pulls", [])},
+        "runs": (env.get("provenance") or {}).get("runs", []),
         "checks": checks, "checked_at": v.get("gated_at", ""), "gate_report": v.get("gate_report", ""),
         "receipts": receipts,
         "evidence": _evidence_lines(w, env, iface),
@@ -1794,6 +1942,9 @@ def _print_card(w, env):
     g, iface = c["guide"], c["interface"]
     print(f"# {c['layer']} {c['layer_name']}｜{c['title']}")
     print(f"状态：{c['state']['word']}——{c['state']['why']}")
+    if (c["guide"].get("agent") or {}).get("name"):
+        a = c["guide"]["agent"]
+        print(f"层 agent：{a['name']}（{a['host_name']}｜{a['file']}）")
     if c["iteration_label"] or c["task_id"]:
         print(f"所属：{c['iteration_label'] or ''} {c['task_id'] or ''}")
     print(f"\n## 这一层是什么")
@@ -1862,8 +2013,13 @@ def cmd_guide(w, args):
         if getattr(args, "layer", None) and args.layer != L:
             continue
         g = LAYER_GUIDE[L]
+        a = agent_of(L)
+        a_sum = agent_summary(a)
         print(f"\n{L} {g['name']}：{g['question']}")
-        print(f"  由谁做：{ROLE_LABEL[g['role']]}｜纪律：{'、'.join(g['skills'])}")
+        print(f"  由谁做：{a_sum['name']}（{ROLE_LABEL[g['role']]}）｜定义 {a_sum['file']}｜宿主名 {a_sum['host_name']}")
+        print(f"  纪律：{'、'.join(x['name'] for x in a_sum['skills'])}"
+              f"｜工具包：{'、'.join(x['name'] for x in a_sum['tools'])}")
+        print(f"  可写：{'；'.join(a_sum['writes'])}")
         print(f"  输入：{g['consumes']}｜必须交出：{g['produces']}")
         print(f"  交付项：{'、'.join(n for n, _ in g['deliverables'])}")
         print(f"  怎样算已验证：{'需要人签字；' if g['human'] else '不需要人签字；'}"
@@ -1876,7 +2032,12 @@ def cmd_guide(w, args):
     print('   "open":   [{"question": "没解决的问题", "ask": "human|next"}],')
     print('   "limits": ["适用边界"]}')
     print("  实测 / 推断 / 拍定 三档；标「实测」的结论必须指向登记在册且通过的测试结果。")
-    return LAYER_GUIDE
+    print("\n调度 agent（只派工与核对，不做层内工作）：")
+    o = agent_defs()["orchestrator"]
+    print(f"  {o['name']}（宿主名 {o['host_name']}｜定义 platform/agents/{o['file']}）")
+    print(f"  纪律：{'、'.join(o.get('skills', []))}｜工具包：{'、'.join(o.get('tools', []))}")
+    print("  规程：platform/methodology/orchestration.md（投影成 skill flow-orchestration）")
+    return {"layers": LAYER_GUIDE, "agents": agent_defs()}
 
 
 # ---------------------------------------------------------------- 层规则表（§4.2/§6）
@@ -2058,11 +2219,16 @@ def cmd_next(w, args):
     else:
         print("前沿层：L1-L8 全部 passed" if st["packages"] else "前沿层：没有进行中的迭代")
     for b in st["blocking"]:
-        layer = b["pkg"].split("-")[1]
-        print(f"  [{LAYER_AGENT.get(layer)}] {b['pkg']}  verdict={b['verdict']}")
+        layer = b["pkg"].split("-")[1] if b["pkg"].startswith("PKG-") else ""
+        if layer in LAYER_DIR:
+            a = agent_of(layer)
+            who = f"{a['name']}（{a['host_name']}）"
+        else:
+            who = LAYER_AGENT.get(layer, "-")
+        print(f"  [{who}] {b['pkg']}  verdict={b['verdict']}")
         if b["report"]:
             print(f"      {b['report'][:110]}")
-        print(f"      简报：wf brief {b['pkg']}")
+        print(f"      开工简报：wf brief {b['pkg']} --out --by <署名>")
     if st["pending_decisions"]:
         humans = [d for d in st["pending_decisions"]]
         print(f"\n另有人类批准点 {len(humans)} 条（不阻塞起草，阻塞 pass）：wf approve <DEC-id> --as <署名>")
@@ -2104,7 +2270,33 @@ def cmd_next(w, args):
 
 
 def cmd_brief(w, args):
-    """生成给执行面 agent 的工作简报（markdown）。"""
+    """生成给执行面 agent 的工作简报（markdown）。
+    加 --out 时把简报落成 <包目录>/brief.md，并在信封 provenance.brief 记时间、署名、指纹与上游。"""
+    if not getattr(args, "out", False):
+        return _print_brief(w, args)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        _print_brief(w, args)
+    text = buf.getvalue()
+    env_path, env = w.resolve_pkg(args.pkg)
+    target = env_path.parent / "brief.md"
+    target.write_text(text, encoding="utf-8")
+    by = (getattr(args, "by", "") or "").strip()
+    upstream = list((env.get("provenance") or {}).get("parent_package_refs", []))
+    rec = {"at": now(), "by": by or "（未署名）",
+           "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+           "upstream": upstream}
+    def _m(e):
+        e.setdefault("provenance", {})["brief"] = rec
+    w.update_envelope(env_path, _m, agent=by)
+    sys.stdout.write(text)
+    print(f"\n简报已留档：{target}")
+    print(f"  指纹 {rec['sha256']}｜署名 {rec['by']}｜上游 {len(upstream)} 个")
+    return rec
+
+
+def _print_brief(w, args):
+    """工作简报的人读正文（cmd_brief 的打印部分）。"""
     env_path, env = w.resolve_pkg(args.pkg)
     layer = env["identity"]["layer_id"]
     role = LAYER_AGENT.get(layer, "-")
@@ -2112,8 +2304,11 @@ def cmd_brief(w, args):
     ds = env.get("design_spec", {})
     v = env.get("validation", {})
     by_id = {e["identity"]["package_id"]: e for _, e in w.find_packages()}
+    a = agent_of(layer)
     print(f"# 工作简报：{env['identity']['package_id']}")
     print(f"- 层：{layer}（{env['identity'].get('layer_name')}）｜主导角色：**{role}**（platform/agents/{role}.md）")
+    print(f"- 层 agent：**{a['name']}**（宿主名 {a['host_name']}｜定义 platform/agents/{a['file']}）")
+    print(f"- 开工前：`export WF_ACTOR=layer:{layer}`——层 agent 不能替人签字")
     print(f"- 标题：{env['identity']['title']}｜owner：{env['identity'].get('owner_agent') or '待认领'}")
     print(f"- 意图：{ds.get('intent','')}")
     if ds.get("assumptions"):
@@ -2126,7 +2321,7 @@ def cmd_brief(w, args):
     print(f"\n## 目标（不变量，原话）\n{card['goal'] or '（本包未归到任务）'}")
     print(f"\n## 这一层是什么")
     print(f"- 回答的问题：{guide['question']}")
-    print(f"- 由谁做：{guide['role_label']}｜纪律：{'、'.join(guide['skills'])}")
+    print(f"- 由谁做：{a['name']}（{guide['role_label']}）｜纪律：{'、'.join(guide['skills'])}")
     print(f"- 输入：{guide['consumes']}｜必须交出：{guide['produces']}")
     print(f"- 怎样算已验证：{'需要人签字；' if guide['human'] else ''}"
           f"{'需要登记在册的测试通过' if guide['needs_test'] else '不要求测试'}")
@@ -2329,6 +2524,10 @@ def cmd_decide(w, args):
         raise SystemExit("错误：--pkg 与 --task 二选一（决策挂在层包或任务上）")
     # 详细依据可以不写：记录里的 rationale 不允许为空，就拿一句话结论顶上
     rationale = (args.rationale or "").strip() or summary
+    # 层 agent 不能替人签字：reviewer 强制为待批（prepare-only）
+    if _layered_actor() and (getattr(args, "reviewer", "") or "") != "pending-user":
+        print("  （层 agent 不能替人签字：reviewer 已强制为 pending-user）")
+        args.reviewer = "pending-user"
     if getattr(args, "task", None):
         task = w.find_task(args.task)
         rec = w.add_decision(args.type, rationale, args.confidence, args.reviewer,
@@ -2443,8 +2642,23 @@ def _gate_override(w, args):
     sys.exit(0 if verdict == VERDICTS_PASS else 1)
 
 
+def _layered_actor():
+    """本进程是不是被某个层 agent 拉起来的（WF_ACTOR=layer:<层>）。空串 = 人或其他调用方。"""
+    a = (os.environ.get("WF_ACTOR") or "").strip()
+    return a if a.startswith("layer:") else ""
+
+
+def _refuse_layer_action(verb):
+    """人的动作不给层 agent 做。这是防误操作的护栏，不是硬隔离：直接改文件绕得过去，文档里照实写。"""
+    actor = _layered_actor()
+    if actor:
+        raise SystemExit(f"错误：{verb} 是人的动作，层 agent（WF_ACTOR={actor}）不能做。"
+                         f"层 agent 只能准备（wf decide 记为待批），把这件事交给带署名的人。")
+
+
 def cmd_gate(w, args):
     if getattr(args, "override", False):
+        _refuse_layer_action("署名覆盖")
         _gate_override(w, args)
     if args.all:
         pkgs = w.find_packages(domain=args.domain, layer=args.layer)
@@ -2465,6 +2679,7 @@ def cmd_gate(w, args):
 
 
 def cmd_invalidate(w, args):
+    _refuse_layer_action("作废")
     w.invalidate(args.ref, args.reason, agent=args.agent)
 
 
@@ -2770,6 +2985,7 @@ def cmd_selftest(w, args):
 
 
 def cmd_approve(w, args):
+    _refuse_layer_action("批准")
     new, affected = w.resolve_decision(args.dec, getattr(args, "as"), reject=False, reason=args.note)
     print(f"{new['decision_id']} 已由 {getattr(args, 'as')} 批准（supersedes {args.dec}）")
     for pid in affected:
@@ -2778,6 +2994,7 @@ def cmd_approve(w, args):
 
 
 def cmd_reject(w, args):
+    _refuse_layer_action("驳回")
     new, affected = w.resolve_decision(args.dec, getattr(args, "as"), reject=True, reason=args.reason)
     print(f"{new['decision_id']} 已由 {getattr(args, 'as')} 驳回（supersedes {args.dec}）")
     for pid in affected:
@@ -3011,7 +3228,9 @@ def cmd_state_export(w, args):
                 words = [entry_by_id[p]["state"] for p in own_p + reused_p]
                 nodes.append({"layer": nd["layer"], "name": nd["name"], "alias": nd["alias"],
                               "own": own_p, "reused": reused_p,
-                              "state": worst_state(words) if words else "未开始"})
+                              "state": worst_state(words) if words else "未开始",
+                              "agent": agent_summary(agent_of(nd["layer"]))["name"]
+                              if nd["layer"] in LAYER_DIR else None})
             it_views.append({
                 "iteration_id": it.get("iteration_id"), "seq": it.get("seq"),
                 "label": it.get("label"), "status": it.get("status"),
@@ -3054,7 +3273,7 @@ def cmd_state_export(w, args):
         # 0.3：+tasks（任务→迭代，含 goal / benchmark / 逐层自有与沿用）；包条目 +task_id/iteration_id；
         #      默认前沿只看进行中的迭代。0.2：+store_root/store_isolated；域过滤贯穿 DAG 与待批；
         #      节点 +title、+dangling_ref
-        "schema_version": "0.4",
+        "schema_version": "0.5",
         "generated_at": now(),
         "generated_by": "wf state-export",
         "store_env_hash": _store_env_hash(w),
@@ -4001,8 +4220,38 @@ _SHOW_RENDERERS = {"L1": _show_L1, "L2": _show_L2, "L3": _show_L3, "L4": _show_L
 _show_env_cache = {}
 
 
+def cmd_run_log(w, args):
+    """记一条执行记录：谁、用什么模型、跑了多久。只记事实，不判断好坏。"""
+    env_path, env = w.resolve_pkg(args.pkg)
+    rec = {"at": now(), "agent": (args.agent or "").strip() or "（未署名）",
+           "model": (args.model or "").strip(),
+           "duration_s": args.duration, "note": (args.note or "").strip()}
+    def _m(e):
+        e.setdefault("provenance", {}).setdefault("runs", []).append(rec)
+    w.update_envelope(env_path, _m, agent=rec["agent"])
+    print(f"已记一条执行：{env['identity']['package_id']}｜{rec['agent']}"
+          + (f"｜模型 {rec['model']}" if rec["model"] else "")
+          + (f"｜{rec['duration_s']} 秒" if rec["duration_s"] is not None else ""))
+    return rec
+
+
 def cmd_show(w, args):
-    """人类可读的层包视图：不显示哈希/ID 细节，按阅读顺序渲染。"""
+    """人类可读的层包视图。加 --for <本包> 时，把这次回读记进那个包的 provenance.context_pulls。"""
+    _print_show(w, args)
+    for_pkg = (getattr(args, "for_pkg", "") or "").strip()
+    if not for_pkg:
+        return
+    env_path, env = w.resolve_pkg(for_pkg)
+    up = w.resolve_pkg(args.pkg)[1]["identity"]["package_id"]
+    rec = {"pkg": up, "at": now(), "by": (getattr(args, "by", "") or "").strip() or "（未署名）"}
+    def _m(e):
+        e.setdefault("provenance", {}).setdefault("context_pulls", []).append(rec)
+    w.update_envelope(env_path, _m, agent=rec["by"])
+    print(f"\n已记下回读：{env['identity']['package_id']} 读了 {up}（{rec['by']}）")
+
+
+def _print_show(w, args):
+    """层包视图的打印部分。"""
     env_path, env = w.resolve_pkg(args.pkg)
     i, v, lc = env["identity"], env["validation"], env["lifecycle"]
     mark = {"passed": "✅", "needs_decision": "⏸", "failed": "✗",
@@ -4203,8 +4452,10 @@ def build_parser():
     s.add_argument("--iteration", default=None, help="只看这个迭代（ITER-… 或 TASK-…/<seq>）；不给则看进行中的迭代")
     s.set_defaults(fn=cmd_next)
 
-    s = sub.add_parser("brief", help="生成给执行面 agent 的工作简报（markdown）")
+    s = sub.add_parser("brief", help="生成给执行面 agent 的工作简报（markdown）；--out 时留档")
     s.add_argument("pkg")
+    s.add_argument("--out", action="store_true", help="把简报写成 <包目录>/brief.md，并在信封里记一条回执")
+    s.add_argument("--by", default="", help="造包人（署名）；--out 时记进回执")
     s.set_defaults(fn=cmd_brief)
 
     s = sub.add_parser("new-mission", help="按场景模板建层包（层总线 v2）。新任务请用 task-new")
@@ -4288,9 +4539,20 @@ def build_parser():
     s.add_argument("layer", nargs="?", default=None, help="只看某一层（L1…L8）")
     s.set_defaults(fn=cmd_guide)
 
-    s = sub.add_parser("show", help="人类可读的层包视图（不显示哈希等机器细节）")
+    s = sub.add_parser("show", help="人类可读的层包视图（不显示哈希等机器细节）；--for 时记下这次回读")
     s.add_argument("pkg")
+    s.add_argument("--for", dest="for_pkg", default="",
+                   help="回读记到哪个包上：wf show <上游包> --for <本包>，留痕供事后查")
+    s.add_argument("--by", default="", help="回读人（署名）")
     s.set_defaults(fn=cmd_show)
+
+    s = sub.add_parser("run-log", help="记一条执行记录（谁、用什么模型、跑了多久）")
+    s.add_argument("--pkg", required=True)
+    s.add_argument("--agent", required=True)
+    s.add_argument("--model", default="")
+    s.add_argument("--duration", type=int, default=None, help="耗时（秒）")
+    s.add_argument("--note", default="")
+    s.set_defaults(fn=cmd_run_log)
 
     s = sub.add_parser("review", help="待批决策审批卡片（全文+证据+命令）")
     s.set_defaults(fn=cmd_review)

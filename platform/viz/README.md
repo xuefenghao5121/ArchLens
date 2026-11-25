@@ -50,14 +50,15 @@ GET  /api/evo-state                        → 演进状态（含谱系 lineage�
 GET  /api/evidence                         → 证据 DAG（兼容保留；界面上的证据页读的是 /api/state 里的卡片）
 GET  /api/benchmarks                       → benchmark 清单（全局一份）
 GET  /api/templates                        → 流程模板：每个模板有哪些框（层）
-GET  /api/guide                            → 每层的固定说明，以及标记（实测 / 推断 / 拍定、F0–F3）的人读含义
+GET  /api/guide                            → 每层的固定说明与这一层的 agent 定义（带正文）、调度 agent，
+                                           以及标记（实测 / 推断 / 拍定、F0–F3）的人读含义
 GET  /api/package/<package-id>             → 层包详情：card（人读的卡片）+ raw（原始记录）
 POST /api/action                           → 写操作（application/json）
 ```
 
 `/api/decisions` 与 `/api/domains` 已停用（404）：决定回执随卡片与任务导出，领域概念已取消。
 
-## 十七种动作（POST /api/action）
+## 十九种动作（POST /api/action）
 
 `body = { action, …, agent, idempotency_key?, target_version? }`
 
@@ -78,6 +79,8 @@ POST /api/action                           → 写操作（application/json）
 | `new_pkg` | 给流程里还没开始的框建层包：`{iteration, layer}` | 迭代须在进行中；同一层只能建一次 |
 | `iter_seal` / `iter_abort` | 结束 / 终止一轮：`{iteration, reason, as}` | `iteration` 可以是 `ITER-…` 或 `TASK-…/<序号>`；署名与理由必填 |
 | `task_seal` | 封板：`{task, reason, as}` | 章程须已批准；进行中的迭代一并结束；署名与理由必填 |
+| `brief_out` | 开工简报留档：`{pkg, by}` | 写成 `<包目录>/brief.md`，信封 `provenance.brief` 记时间、署名、指纹、所含上游 |
+| `run_log` | 记一条执行：`{pkg, agent, model?, duration?, note?}` | 追加到 `provenance.runs`；只记事实 |
 
 - **幂等键**：`idempotency_key` 与请求内容绑定——同 key 换内容返回 409。界面自动按
   「动作 + 目标 + 当前 store 版本」生成，所以重复点击/网络重试不会落两条记录。
@@ -96,6 +99,32 @@ wf gate <pkg> --override --as <署名> --reason <理由>
 
 它会先落一条带理由的 `override` 决策并挂到层包，再以该署名重新门禁——谁、为什么解除失效
 都有记录（v2.2 §5.3）。
+
+## 层 agent（设计文档 §12）
+
+每一层一个 agent 定义，在 `platform/agents/<层目录>/agent.md`：frontmatter 声明这层的 `skills`、`tools`
+（只能引用 `platform/agents/toolpacks.json` 里的包）、`writes`（可写范围）、`must_not`（不许做的事），正文是
+职责、输入、工作步骤、完成标准与纪律。另有一份调度 agent（`orchestrator/agent.md`）：只派工与核对，不做
+层内工作。`platform/tools/bind_hosts.py` 把它们投影成 `.zcode/agents/<host_name>.md`：
+
+- 层 agent 的宿主工具是 `Read, Write, Edit, Bash, Glob, Grep`；
+- 调度 agent 只有 `Read, Bash, Glob, Grep`（没有写文件的能力）；
+- 宿主对项目级定义不允许设权限模式。
+
+定义加载时逐项校验（schema、skills 在磁盘上、tools 在清单里、role 与 `LAYER_AGENT` 一致、host_name 不重复），
+不一致直接报错。**宿主的子代理定义在会话启动时载入**，新加的定义要新会话才生效。
+
+上下文边界留三样记录，都写在信封的 `provenance` 里：
+
+```bash
+wf brief <包> --out --by <署名>            # 开工简报落盘 + 回执（指纹、上游）
+wf show <上游包> --for <本包> --by <署名>   # 接口卡之外另读上游，留痕
+wf run-log --pkg <包> --agent <谁> [--model 名] [--duration 秒]
+```
+
+层 agent 开工前 `export WF_ACTOR=layer:<层>`。在这个变量下 `wf approve / reject / gate --override /
+invalidate` 一律被拒，`wf decide` 的 reviewer 被强制为 `pending-user`——层 agent 只能准备，不能替人签字。
+这是防误操作的护栏，不是硬隔离（直接改文件绕得过去）。
 
 ## 层接口卡与强制规则（设计文档 §11）
 
@@ -149,11 +178,13 @@ wf next [--iteration ITER-…]                           # 前沿 + 任务级提
 python3 platform/viz/regress.py      # 退出码 0 = 全部通过
 ```
 
-158 条用例，每条对应一个真实出过的问题或新立的契约：跨站写请求被拒、查不到的包不再打挂进程、路径透传
+178 条用例，每条对应一个真实出过的问题或新立的契约：跨站写请求被拒、查不到的包不再打挂进程、路径透传
 被拒、证据状态方向、自批准被拒、已失效包不被验证复活、署名覆盖留痕、乐观并发、幂等键、演进状态机；
 迭代归属与沿用、模板节点与完成标志、卡片状态词与核对结论逐包一致（真实 30 个包）、旧包摘录不改原包；
 接口卡五条强制规则、决定回执与过期重签、去领域的立项、全局 benchmark、`benchmark_only` 模板、补建层包、
-结束 / 终止 / 封板、任务级回执；立项 → 批准章程 → 结束首轮 → 开下一轮 → 封板的全流程与 Mission Review
+结束 / 终止 / 封板、任务级回执；
+层 agent 定义（schema / skills / 工具包 / role 一致 / host_name 不重复、坏定义被拒）、开工简报留档与指纹、
+回读留痕、执行记录、层 agent 不能替人签字（四种动作被拒、decide 强制待批）、宿主投影九份、状态导出 0.5；立项 → 批准章程 → 结束首轮 → 开下一轮 → 封板的全流程与 Mission Review
 提示。全程在临时沙箱里跑（复制 store / domains / tasks，以 `WF_ROOT` 启动服务），开跑前先确认服务端连的
 是沙箱，结束后核对真实 store 指纹未变。`wf.py` 的 `selftest` 只覆盖门禁的故障注入，两者互补。
 
@@ -190,6 +221,7 @@ wf.py（state-export / card / guide / brief / 任务与迭代命令 / 各写入�
 server.py（HTTP 层：请求防护、参数校验、幂等、错误转换）
       ↓ JSON
 frontend/（React 版：研究总览 / 流程编排 / 层详情 / 证据与回溯 / 演进中心）
+.zcode/agents/*.md（宿主子代理定义，由 bind_hosts.py 从 platform/agents/*/agent.md 投影，生成物）
 index.html（单文件只读版，未跟进任务 / 迭代与卡片的结构）
 ```
 

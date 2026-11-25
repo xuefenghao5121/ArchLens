@@ -1,11 +1,11 @@
 {
   "$id": "workflow_state",
   "title": "workflow-state.json（wf state-export 的机器契约，可视化工作流设计文档 §3/§10/§11）",
-  "description": "store 的只读投影，供编排 Agent 与前端消费。domain 过滤贯穿层包、DAG 与待批决策（兼容旧参数；界面上不再有领域）。store_env_hash 覆盖索引、证据图、层包信封与任务记录，用于校验状态是否过期。精简校验器不支持 $ref，层包条目的 schema 放在 _pkg_entry，由 state-export 逐条校验。0.4：每个层包带 state（唯一的状态词）与 card（人读的接口卡、核对回执、证据、决定回执）；每个迭代按模板顺序列出 nodes（流程编排里的框）与 complete；每个任务带 receipts（任务级的决定回执：章程 / 开某一轮 / 封板）。",
+  "description": "store 的只读投影，供编排 Agent 与前端消费。domain 过滤贯穿层包、DAG 与待批决策（兼容旧参数；界面上不再有领域）。store_env_hash 覆盖索引、证据图、层包信封与任务记录，用于校验状态是否过期。精简校验器不支持 $ref，层包条目的 schema 放在 _pkg_entry，由 state-export 逐条校验。0.4：每个层包带 state（唯一的状态词）与 card（人读的接口卡、核对回执、证据、决定回执）；每个迭代按模板顺序列出 nodes（流程编排里的框）与 complete；每个任务带 receipts（任务级的决定回执：章程 / 开某一轮 / 封板）。0.5：每个框带 agent；卡片带 context（开工简报与回读记录）与 runs（执行记录）。",
   "type": "object",
   "required": ["schema_version", "generated_at", "generated_by", "store_env_hash", "store_root", "store_isolated", "summary", "layers", "tasks", "dag", "pending_decisions", "flow_candidates"],
   "properties": {
-    "schema_version": {"enum": ["0.1", "0.2", "0.3", "0.4"]},
+    "schema_version": {"enum": ["0.1", "0.2", "0.3", "0.4", "0.5"]},
     "generated_at": {"type": "string"},
     "generated_by": {"type": "string"},
     "store_env_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -97,7 +97,8 @@
                       "alias": {"type": "string"},
                       "own": {"type": "array", "items": {"type": "string"}},
                       "reused": {"type": "array", "items": {"type": "string"}},
-                      "state": {"type": "string"}
+                      "state": {"type": "string"},
+                      "agent": {"type": ["string", "null"], "description": "这一层由哪个 agent 做（agent.md 的 name）"}
                     }
                   }
                 },

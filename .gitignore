@@ -37,5 +37,6 @@ __pycache__/
 /platform/viz/idempotency.jsonl
 *.log
 
-# ---- 会话、备份与计划 ----
-.zcode/
+# ---- 会话备份与计划（.zcode/agents/ 是生成物，进库）----
+.zcode/backups/
+.zcode/plans/
