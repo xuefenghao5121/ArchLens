@@ -465,7 +465,7 @@ def _h_task_new(w, wfmod, p):
         create=bool(p.get("create")), owner=p.get("owner") or "",
         **{"as": p.get("as") or ""}, note=p.get("note") or "", agent=_agent(p)))
     return {"task_id": task["task_id"], "status": task["status"], "title": task["title"],
-            "flow_template": task.get("flow_template", ""),
+            "flow_template": task.get("flow_template", ""), "warnings": task.get("_warnings", []),
             "charter_decision_id": task.get("charter_decision_id", ""),
             "iterations": [{"iteration_id": it["iteration_id"], "label": it["label"], "status": it["status"]}
                            for it in task.get("iterations", [])]}

@@ -863,6 +863,24 @@ def run(ctx: Ctx):
                   sv["schema_version"] == "0.5"
                   and all(n.get("agent") == byname[n["layer"]] for n in nodes), str(nodes[:1]))
 
+        rc, out = ctx.wf("task-new", "--title", "过程目标测试", "--slug", "process-goal",
+                         "--goal", "用完整 L1-L8 纪律修复两个 bug，每层建包走 gate", "--benchmark", "kernel-x")
+        ctx.check("目标写成过程要求：照建，但给出提醒（不拦截）",
+                  rc == 0 and "过程要求" in out and "每层" in out, out[:200])
+        st, jw = ctx.post({"action": "task_new", "title": "过程目标 HTTP", "slug": "process-goal-http",
+                           "goal": "按流程模板每层建包走 gate", "benchmarks": ["kernel-x"], "create": False})
+        ctx.check("同一个提醒经 HTTP 也带回界面（warnings）",
+                  jw.get("ok") and any("过程要求" in x for x in (jw.get("result") or {}).get("warnings", [])),
+                  str(jw.get("result"))[:200])
+        rc, out = ctx.wf("task-new", "--title", "具体目标测试", "--slug", "concrete-goal",
+                         "--goal", "读请求在缺页时返回旧数据（应返回 404）", "--benchmark", "kernel-x")
+        ctx.check("具体问题的目标不触发提醒", rc == 0 and "过程要求" not in out, out[:160])
+        cvt = next(t for t in ctx.get("/api/state")["tasks"] if t["task_id"] == "TASK-cvfpu-overflow")
+        ctx.check("cvfpu 任务的目标是具体问题，不是过程要求",
+                  "溢出" in cvt["goal"]["statement"]
+                  and not any(x in cvt["goal"]["statement"] for x in ("L1-L8", "每层", "gate")),
+                  cvt["goal"]["statement"])
+
         bad = ctx.root / "platform" / "agents" / "L5_rtl" / "agent.md"
         orig = bad.read_text(encoding="utf-8")
         bad.write_text(orig.replace('"caselaw"', '"caselaw-nope"'), encoding="utf-8")

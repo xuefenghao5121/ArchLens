@@ -1,7 +1,7 @@
 {
   "$id": "task_record",
   "title": "任务记录（标题 + 目标不变量 + benchmark + 流程模板；迭代是一次 L1→L8 推进）",
-  "description": "每个任务一个文件 tasks/<task_id>.json。任务长什么样、怎样算完成只由 flow_template 决定：没有任务类型，也没有另写的成功判据。goal.statement 是目标原话（不变量），原样显示在每一层。历史章程里的 success_criteria / budget / tradeoff_policy / stop_rule 仅存档。namespace 是旧任务的层包存放位置（「领域」概念已停用，界面上不出现）；新任务统一用默认位置。包归属迭代：迭代里显式列出的 package_ids → 包上的 provenance.iteration_id → 按创建时间落进当时进行中的迭代。",
+  "description": "每个任务一个文件 tasks/<task_id>.json。任务长什么样、怎样算完成只由 flow_template 决定：没有任务类型，也没有另写的成功判据。goal.statement 是目标原话（不变量），原样显示在每一层；它要写**要解决的具体问题**（症状、期望、边界），不是流程要求——「用完整 L1-L8 纪律、每层建包走 gate」这类过程描述属于模板与核对规则，写进目标就错了层次。一个任务只对应一个具体问题；多个问题各立任务。历史章程里的 success_criteria / budget / tradeoff_policy / stop_rule 仅存档。namespace 是旧任务的层包存放位置（「领域」概念已停用，界面上不出现）；新任务统一用默认位置。包归属迭代：迭代里显式列出的 package_ids → 包上的 provenance.iteration_id → 按创建时间落进当时进行中的迭代。",
   "type": "object",
   "required": ["task_id", "schema_version", "title", "status", "goal", "benchmarks", "iterations", "flow_template"],
   "properties": {

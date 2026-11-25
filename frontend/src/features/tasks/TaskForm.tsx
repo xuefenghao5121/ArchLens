@@ -21,6 +21,8 @@ export default function TaskForm({ onClose, onCreated }: {
   const [template, setTemplate] = useState('')
   const [signer, setSigner] = useState('')
   const [formError, setFormError] = useState('')
+  // 目标写成了过程要求时：任务照建，但先把提醒摆出来，让人决定继续还是改
+  const [created, setCreated] = useState<{ taskId: string; iterationId: string | null; warnings: string[] } | null>(null)
   // 「导入 benchmark」子表单：名字、种类、本机路径（每行一个，文件或目录）
   const [showImport, setShowImport] = useState(false)
   const [bName, setBName] = useState('')
@@ -65,6 +67,11 @@ export default function TaskForm({ onClose, onCreated }: {
     if (!resp.ok) return setFormError(actionError(resp))
     const r = resp.result ?? {}
     const its = (r.iterations as { iteration_id: string }[] | undefined) ?? []
+    const warns = (r.warnings as string[] | undefined) ?? []
+    if (warns.length) {
+      setCreated({ taskId: String(r.task_id), iterationId: its[0]?.iteration_id ?? null, warnings: warns })
+      return
+    }
     onCreated(String(r.task_id), its[0]?.iteration_id ?? null)
   }
 
@@ -162,6 +169,18 @@ export default function TaskForm({ onClose, onCreated }: {
         </div>
 
         {formError && <div className="form-error">{formError}</div>}
+        {created && (
+          <div className="tf-import">
+            <strong className="small">已立项：{created.taskId}，但有一处要提醒</strong>
+            {created.warnings.map((x) => <div key={x} className="tf-hint">{x}</div>)}
+            <div className="tf-hint">
+              任务已经建好，不会拦。建议把目标改成那个具体问题后另建一个更聚焦的任务；也可以先去流程编排看看。
+            </div>
+            <div className="tf-foot">
+              <button className="tf-btn primary" onClick={() => onCreated(created.taskId, created.iterationId)}>仍然继续</button>
+            </div>
+          </div>
+        )}
 
         <div className="tf-foot">
           <button className="tf-btn primary" disabled={busy} onClick={submit}>

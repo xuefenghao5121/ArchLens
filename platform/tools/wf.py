@@ -98,6 +98,14 @@ TEMPLATE_LABEL = {
 }
 # 历史章程里可能还带着的几项（不再作为输入项，只在展示时附上存档）
 GOAL_FIELDS = (("budget", "预算"), ("tradeoff_policy", "权衡政策"), ("stop_rule", "停止规则"))
+# 目标写成了「过程要求」时的提醒词。只提醒、不拦截：这是判断，不是格式。
+# 目标该写要解决的具体问题（症状、期望、边界）；流程由 flow_template 决定。
+GOAL_PROCESS_WORDS = ("L1-L8", "L1–L8", "每层", "建包", "走 gate", "纪律", "流程模板", "全平台能力测试")
+
+
+def goal_process_hits(statement):
+    """目标里出现的过程词。命中不代表错，但值得提醒：过程由模板决定，目标要写具体问题。"""
+    return [w_ for w_ in GOAL_PROCESS_WORDS if w_ in (statement or "")]
 
 
 def now():
@@ -3929,6 +3937,11 @@ def cmd_task_new(w, args):
     benchmarks = _resolve_benchmarks(w, args.benchmark)
     if not benchmarks:
         raise SystemExit("错误：至少给一个 --benchmark（先 wf bench-import 导入）")
+    hits = goal_process_hits(statement)
+    if hits:
+        print(f"  注意：目标里出现了过程要求（命中：{'、'.join(hits)}）。流程由模板决定；"
+              f"目标该写要解决的具体问题（症状、期望、边界），例如")
+        print("        「FP32 值 -2^31 转 INT32 时被误判为溢出（NV 报 1，应为 0）」。这次照建，不拦。")
     signer = _signer_or_pending(args)
     existing = w.tasks()
     slug = _task_slug(args.slug) or _task_slug(title)
@@ -3986,6 +3999,10 @@ def cmd_task_new(w, args):
     elif task["iterations"]:
         print("  迭代 1 尚无层包：用 wf new-pkg --iteration " + task["iterations"][0]["iteration_id"]
               + " --layer … --slug … 逐层建包")
+    if hits:
+        # 只给调用方（命令行 / 服务端 / 界面）看，不写进任务记录
+        task["_warnings"] = [f"目标里出现了过程要求：{'、'.join(hits)}。流程由模板决定；"
+                             "目标该写要解决的具体问题（症状、期望、边界）。"]
     return task
 
 

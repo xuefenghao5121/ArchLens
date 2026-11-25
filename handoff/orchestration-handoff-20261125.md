@@ -109,7 +109,7 @@ curl -s http://127.0.0.1:8899/api/state
 
 后端报告：状态导出是 0.4 版，30 个层包，3 个任务，3 条待人批准。30 个包的状态是 19 个已验证、7 个待人决定、3 个未开始、1 个进行中。
 
-真实 store 没有为了这份方案改过。30 个层包和决策、证据图的最后修改时间都停在 2026-11-19 11:57；任务记录和 benchmark 清单停在 2026-11-24 19:30，那是上一轮迁移留下的。指纹在附录 A。
+真实 store 没有为了这份方案改过。30 个层包和决策、证据图的最后修改时间都停在 2026-11-19 11:57；任务记录与 benchmark 清单在 2026-11-25 16:45 改过一次（cvfpu 任务的目标修订，见 SPEC 的同日条目），层包与索引不受影响。指纹在附录 A。
 
 ### 上一轮做成了什么 {#HO-S-002}
 > 源：`VISUAL-WORKFLOW-DESIGN.md` §11；`SPEC.md` 里 2026-11-24 21:00 的条目
@@ -361,8 +361,8 @@ cd frontend && npm run dev                          # 前端，/api 代理到 88
 |---|---|---|
 | 层包信封 `domains/*/*/PKG-*/envelope.json` | 30 | `038508277a933aac` |
 | store 索引（不含 benchmarks）+ 层包信封 + `pack.json` | 6 + 30 + 2 | `87156577970fa1b9` |
-| `tasks/*.json` + `benchmarks.jsonl` | 3 + 1 | `ac34ebb003114409` |
-| `regress.store_fingerprint()`，另一种算法，完整值 | — | `8de06b81707524fed1461b4a58e2cdf559026c69b1ae9385eb62d172c2d26035` |
+| `tasks/*.json` + `benchmarks.jsonl` | 3 + 1 | `df71428de031a8d7`（16:45 任务记录修订后；旧值 `ac34ebb003114409`） |
+| `regress.store_fingerprint()`，另一种算法，完整值 | — | `b8adb5f7cf67f8421270a4c99972f0079cd5fb1a1b56afc83a6e3b53f7859bf0`（旧值 `8de06b81…`） |
 
 复现前三行：
 

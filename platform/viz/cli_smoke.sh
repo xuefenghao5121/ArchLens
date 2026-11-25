@@ -181,6 +181,7 @@ print("  sme2 迭代完成标志:", [(i["label"], i["complete"]) for i in t["ite
 ' || echo "state-export consistency check failed" >> "$SBX/.fail"
 
 step "10. 层 agent：定义、开工简报留档、回读留痕、执行记录、拦截"
+WF 3 task-new --title "过程目标" --slug smoke-proc --goal "用 L1-L8 纪律每层建包走 gate" --benchmark test-kernel | grep -q '过程要求' && echo "  ✓ 目标写成过程要求时给提醒（照建，不拦截）"
 WFR guide | grep -q '观测 agent' && echo "  ✓ wf guide 列出每层的 agent 与工具包"
 WFR next | grep -q '开工简报：wf brief' && echo "  ✓ wf next 直接给出开工命令"
 WFR brief "$L1" --out --by tester > /dev/null && test -f "$SBX/domains/general/L1_observation/$L1/brief.md" && echo "  ✓ 开工简报留档：brief.md 落盘"
