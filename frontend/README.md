@@ -152,8 +152,7 @@ src/
 - 各 feature 的 CSS 是全局类名，打包后合并成一个文件。跨页面共用的类（`.tf-btn` 按钮、`.give` 结论行、
   `.receipt` 回执、`.notice` 提示条、`.state-chip` 状态词）放在 `features/shared/shared.css` 与
   `features/tasks/tasks.css`；同名类不要在两个 feature 里给不同的规则。
-- 类型检查：`tsconfig.json` 带了指向 `tsconfig.node.json` 的 reference，直接 `tsc --noEmit -p` 会报
-  TS6310；用 `npx tsc -b`（`npm run build` 的做法），或临时写一份不带 reference 的配置来查。
+- 类型检查：`npx tsc -b` 或 `npm run build`；`tsconfig.node.json` 已改为 `emitDeclarationOnly`，不再触发 TS6310。
 - Vite 开发服务器偶尔会漏掉同一文件的第二次修改，向外提供「新代码引用了已删掉的旧函数」的
   半新半旧模块，页面渲染抛错变空白（`tsc` 仍然通过，因为磁盘上的源码是对的）。连续改完一个
   文件后在浏览器里看一眼；出现空白就重启 `npm run dev`。

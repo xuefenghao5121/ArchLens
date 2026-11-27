@@ -21,7 +21,7 @@
 | 层间总线 | `platform/tools/layer_bus.py` | 层组件注册表、类型兼容检查、流程模板引擎；模板本身是数据（`platform/agents/flow_templates.json`） |
 | 判例库 | `platform/tools/caselaw.py` | 按情境检索积累的 RTL 与验证教训 |
 | 运行时 | `platform/tools/runtime.py`、`runtime_v2.py` | 平台内部执行层 agent：v1 通用工具循环；v2 用 LangGraph + L1–L8 分层的领域工具（可选依赖），跑完由 `wf gate` 核对 |
-| 契约 | `platform/schemas/` | 13 份 JSON Schema：层包、接口卡、测试定义/运行/结果、决策、领域包、状态导出、层 agent、流程模板等 |
+| 契约 | `platform/schemas/` | 14 份 JSON Schema：层包、接口卡、测试定义/运行/结果、决策、领域包、状态导出、层 agent、流程模板等 |
 | 方法论 | `platform/methodology/` | 层输出与交接纪律、L3 判据有效性；`bind_hosts.py` 把它们投影成宿主 skill |
 | 服务端 | `platform/viz/server.py` | 只读状态投影 + 受控写操作面（请求来源校验、幂等键、乐观并发） |
 | 界面 | `frontend/` | React + TypeScript：研究总览、流程编排、层详情、证据与回溯、演进中心、Agent 管理、技能与工具、编排配置 |
@@ -100,7 +100,7 @@ v1 始终可用；v2 对 L1–L8 全部生效。L1 没有 bash/通用仓库读�
 ```
 platform/
 ├── tools/        wf.py（引擎）、runtime.py（层 agent 运行时）、layer_bus.py、caselaw.py、bind_hosts.py
-├── schemas/      13 份 JSON Schema
+├── schemas/      14 份 JSON Schema
 ├── methodology/  方法论单一事实源（宿主无关的 markdown）
 ├── agents/       九份层 agent 定义（agent.md）、工具包清单、流程模板数据
 ├── templates/    领域包与交付物的模板

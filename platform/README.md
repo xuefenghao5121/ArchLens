@@ -5,7 +5,7 @@
 
 ```
 platform/
-├── schemas/    7 个 JSON Schema（层包信封、测试三分离、决策、领域包、DAG 边）
+├── schemas/    14 个 JSON Schema（层包信封、测试三分离、决策、领域包、DAG 边）
 ├── tools/wf.py 流程 CLI（stdlib-only，无第三方依赖）
 ├── store/      不可变工件与证据存储
 │   ├── objects/          内容寻址工件副本（sha256 前 16 位目录）
