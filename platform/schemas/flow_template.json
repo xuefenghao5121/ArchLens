@@ -1,0 +1,27 @@
+{
+  "$id": "flow_template",
+  "title": "流程模板（platform/agents/flow_templates.json 里的单个模板）",
+  "description": "模板决定一轮迭代有哪些框（层组件）、按什么顺序；id 是任务记录里 flow_template 引用的稳定标识，创建后不可改。nodes 的顺序就是流程顺序，edges 由引擎按顺序推导（repeat: per_case 的节点展开为 case_1..N）。gate_overrides 按节点别名给出该框的额外必填字段。",
+  "type": "object",
+  "required": ["label", "description", "nodes"],
+  "properties": {
+    "label": {"type": "string", "minLength": 1},
+    "description": {"type": "string", "minLength": 1},
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["component", "alias"],
+        "properties": {
+          "component": {"type": "string", "minLength": 1},
+          "alias": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]*$"},
+          "repeat": {"type": "string", "enum": ["per_case"]}
+        }
+      }
+    },
+    "gate_overrides": {
+      "type": "object",
+      "description": "别名 → {required_fields: [...]}；只对该别名对应的框生效"
+    }
+  }
+}

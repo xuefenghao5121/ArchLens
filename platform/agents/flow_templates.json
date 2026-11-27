@@ -1,0 +1,88 @@
+{
+  "schema_version": "1.0",
+  "description": "流程模板：任务长什么样、一轮迭代有哪些框、按什么顺序，只由这里决定。引擎只读 nodes；edges 由节点顺序推导。改这里之后，已有任务按新模板呈现（已建的层包不删）。",
+  "default": "microarch_optimize",
+  "templates": {
+    "microarch_optimize": {
+      "label": "完整八层（观测 → 归因 → 方案 → 契约 → RTL → 集成 → 实验 → 结论）",
+      "description": "完整八层——微架构优化（FLOW-1 形态）",
+      "nodes": [
+        {"component": "L1", "alias": "l1"},
+        {"component": "L2", "alias": "l2"},
+        {"component": "L3", "alias": "l3"},
+        {"component": "L4", "alias": "l4"},
+        {"component": "L5", "alias": "l5"},
+        {"component": "L6", "alias": "l6"},
+        {"component": "L7", "alias": "l7"},
+        {"component": "L8", "alias": "l8"}
+      ],
+      "gate_overrides": {}
+    },
+    "bug_fix_simple": {
+      "label": "缺陷修复直达（观测 → RTL 修复 → 结论）",
+      "description": "issue 已含根因（归因 ≥1），直达修复+验证",
+      "nodes": [
+        {"component": "L1", "alias": "anchor"},
+        {"component": "L5d", "alias": "fix"},
+        {"component": "L8", "alias": "conclude"}
+      ],
+      "gate_overrides": {
+        "fix": {"required_fields": ["root_cause", "trigger_condition", "fix_location", "stimulus_design"]}
+      }
+    },
+    "bug_fix_with_attribution": {
+      "label": "缺陷修复加归因（观测 → 归因 → RTL 修复 → 结论）",
+      "description": "issue 只有症状（归因 0），需轻量归因后再修",
+      "nodes": [
+        {"component": "L1", "alias": "anchor"},
+        {"component": "L2", "alias": "attribute"},
+        {"component": "L5d", "alias": "fix"},
+        {"component": "L8", "alias": "conclude"}
+      ],
+      "gate_overrides": {
+        "fix": {"required_fields": ["root_cause", "trigger_condition", "fix_location", "stimulus_design"]}
+      }
+    },
+    "comparative_study": {
+      "label": "对比研究（观测 → 归因 → 实验 → 结论）",
+      "description": "对比研究——跳过设计层",
+      "nodes": [
+        {"component": "L1", "alias": "anchor"},
+        {"component": "L2", "alias": "attribute"},
+        {"component": "L7", "alias": "measure"},
+        {"component": "L8", "alias": "conclude"}
+      ],
+      "gate_overrides": {}
+    },
+    "component_design": {
+      "label": "新组件设计（方案 → 契约 → RTL → 集成 → 实验）",
+      "description": "新组件设计——跳过 L1/L2",
+      "nodes": [
+        {"component": "L3", "alias": "design"},
+        {"component": "L4", "alias": "contract"},
+        {"component": "L5", "alias": "implement"},
+        {"component": "L6", "alias": "integrate"},
+        {"component": "L7", "alias": "verify"}
+      ],
+      "gate_overrides": {}
+    },
+    "batch_calibration": {
+      "label": "批量标定（共享观测 → 逐例修复 → 汇总结论）",
+      "description": "批量标定——共享 L1 + 每例 L5d + 共享 L8",
+      "nodes": [
+        {"component": "L1", "alias": "shared_anchor"},
+        {"component": "L5d", "alias": "case_N", "repeat": "per_case"},
+        {"component": "L8", "alias": "aggregate"}
+      ],
+      "gate_overrides": {
+        "case_N": {"required_fields": ["root_cause", "trigger_condition", "fix_location", "stimulus_design"]}
+      }
+    },
+    "benchmark_only": {
+      "label": "仅 benchmark（不走层：只有目标、benchmark 与人的决定）",
+      "description": "仅 benchmark（不走层）——只有目标、benchmark 与人的决定",
+      "nodes": [],
+      "gate_overrides": {}
+    }
+  }
+}

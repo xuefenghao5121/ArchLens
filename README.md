@@ -18,18 +18,20 @@
 | 组件 | 位置 | 作用 |
 |---|---|---|
 | 流程引擎 | `platform/tools/wf.py` | 层包、门禁、失效传播、决策、测试三分离、任务与迭代、状态导出。只依赖标准库 |
-| 层间总线 | `platform/tools/layer_bus.py` | 层组件注册表、类型兼容检查、流程模板（完整八层 / 缺陷修复 / 对比研究 / 新组件 / 批量标定 / 仅 benchmark） |
+| 层间总线 | `platform/tools/layer_bus.py` | 层组件注册表、类型兼容检查、流程模板引擎；模板本身是数据（`platform/agents/flow_templates.json`） |
 | 判例库 | `platform/tools/caselaw.py` | 按情境检索积累的 RTL 与验证教训 |
-| 契约 | `platform/schemas/` | 12 份 JSON Schema：层包、接口卡、测试定义/运行/结果、决策、领域包、状态导出等 |
+| 运行时 | `platform/tools/runtime.py`、`runtime_v2.py` | 平台内部执行层 agent：v1 通用工具循环；v2 用 LangGraph + L1–L8 分层的领域工具（可选依赖），跑完由 `wf gate` 核对 |
+| 契约 | `platform/schemas/` | 13 份 JSON Schema：层包、接口卡、测试定义/运行/结果、决策、领域包、状态导出、层 agent、流程模板等 |
 | 方法论 | `platform/methodology/` | 层输出与交接纪律、L3 判据有效性；`bind_hosts.py` 把它们投影成宿主 skill |
 | 服务端 | `platform/viz/server.py` | 只读状态投影 + 受控写操作面（请求来源校验、幂等键、乐观并发） |
-| 界面 | `frontend/` | React + TypeScript：研究总览、流程编排、层详情、证据与回溯、演进中心 |
+| 界面 | `frontend/` | React + TypeScript：研究总览、流程编排、层详情、证据与回溯、演进中心、Agent 管理、技能与工具、编排配置 |
 | 适配器 | `adapters/` | 仿真器适配（gem5 ARM、QEMU user-mode），换仿真器只写一份清单 |
-| 角色与规范 | `platform/agents/`、`.agents/skills/` | 执行面三类角色的职责与纪律 |
+| 角色与规范 | `platform/agents/`、`.agents/skills/` | 九份层 agent 定义、工具包清单与流程模板；技能是方法论的功能投影 |
 
 ## 快速开始
 
-只依赖 Python 3 标准库；界面需要 Node 18+。
+只依赖 Python 3 标准库；界面需要 Node 18+。引擎（`wf.py`）保持 stdlib-only；可选的 LangGraph 运行时 v2
+需要额外依赖，见下面的启动说明。
 
 ```bash
 git clone https://github.com/xuefenghao5121/ArchLens.git
@@ -74,16 +76,33 @@ cd frontend && npm install && npm run dev
 # 打开 http://localhost:5173
 ```
 
-两个服务都只监听本机回环地址。
+两个服务都只监听本机回环地址。要让平台自己跑层 agent，先在 Agent 管理页的「运行时」填 OpenAI 兼容接口、
+模型与密钥（也可用环境变量 `RUNTIME_BASE_URL / RUNTIME_MODEL / RUNTIME_API_KEY`），然后在层详情页点
+「派给 agent 开工」；工具执行、核对与作业日志都在平台内完成，不需要另开对话。
+
+要启用 LangGraph v2（L1–L8 领域工具图）：
+
+```bash
+python3 -m venv --system-site-packages .venv-runtime
+.venv-runtime/bin/pip install -r requirements-runtime.txt
+.venv-runtime/bin/python platform/viz/server.py --port 8899
+# Agent 管理 → 运行时 → 引擎选 langgraph
+```
+
+v1 始终可用；v2 对 L1–L8 全部生效。L1 没有 bash/通用仓库读；L2/L5/L6/L7 按层开放受控命令与 `designs` 等写入，L3/L4/L8 以结构化写入为主；每层都有显式 ReAct 回路（每次工具批次后生成一条 Thought，界面按“思考 → 行动 → 观察”展示）。
+
+层详情里，交付文件与接口卡引用的工件都可以直接打开、审核；编辑会另存为
+`designs/<pkg>/edits/…` 下的新 ART，不覆盖共享输入，并自动重跑核对、作废直接下游。接口卡每条结论
+下面的 ART 是该结论自己声明的依据，证据页会显示工件类型、用途和哈希，便于判断因果是否成立。
 
 ## 目录
 
 ```
 platform/
-├── tools/        wf.py（引擎）、layer_bus.py、caselaw.py、bind_hosts.py
-├── schemas/      12 份 JSON Schema
+├── tools/        wf.py（引擎）、runtime.py（层 agent 运行时）、layer_bus.py、caselaw.py、bind_hosts.py
+├── schemas/      13 份 JSON Schema
 ├── methodology/  方法论单一事实源（宿主无关的 markdown）
-├── agents/       执行面角色包：profiling / design / integration
+├── agents/       九份层 agent 定义（agent.md）、工具包清单、流程模板数据
 ├── templates/    领域包与交付物的模板
 ├── caselaw/      判例库
 └── viz/          服务端、回归、命令行冒烟、单文件只读页

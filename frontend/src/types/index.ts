@@ -27,6 +27,8 @@ export interface ArtifactRef {
 // ---- 层接口卡：层与层之间传递信息的唯一格式 ----
 
 /** 交给下游的一条结论。source=旧包摘录时的来源字段 */
+export type GiveKind = 'root_cause' | 'measurement' | 'exclusion' | 'scope' | 'decision' | 'other'
+
 export interface Give {
   id: string
   text: string
@@ -34,6 +36,8 @@ export interface Give {
   frame?: Frame | null
   evidence: string[]
   source?: string
+  // 可选：agent 在接口卡里标注结论类型；没有时界面按文字推断
+  kind?: GiveKind
 }
 /** 用了上游的哪条结论 */
 export interface Take { from: string; statement: string }
@@ -95,6 +99,8 @@ export interface EvidenceLine {
   hash?: string
   path?: string
   cited?: boolean
+  // 该工件是哪些 RES 的运行证据（测试原始日志/统计）
+  for_test?: string[]
 }
 
 /** 层 agent 定义：谁做这一层、用什么、能写哪里、不许做什么 */
@@ -309,13 +315,156 @@ export interface WorkflowState {
 
 // ---- 流程模板 / 层说明 ----
 
+export interface TemplateNode { component: string; alias: string; repeat?: 'per_case' }
+
 export interface TemplateInfo {
   id: string
   label: string
   description: string
   layers: { layer: string; name: string; alias: string }[]
+  // 编排配置页用：原始节点、门禁覆盖、被哪些任务使用
+  nodes?: TemplateNode[]
+  gate_overrides?: Record<string, { required_fields?: string[] }>
+  used_by?: { tasks: number; task_ids: string[] }
 }
-export interface TemplatesResponse { templates: TemplateInfo[]; default: string }
+
+export interface TemplateComponent {
+  id: string
+  name: string
+  input_types: string[]
+  output_type: string
+  human_weight: string
+  requires_test_evidence: boolean
+}
+
+export interface TemplatesResponse {
+  templates: TemplateInfo[]
+  default: string
+  components?: TemplateComponent[]
+  sha?: string
+  errors?: string[]
+}
+
+// ---- 配置管理：Agent / 技能 / 工具包 / 版本历史 ----
+
+export interface AgentConfigEntry {
+  target: string
+  layer: string
+  name: string
+  host_name: string
+  role: string
+  role_label: string
+  file: string
+  skills: string[]
+  tools: string[]
+  writes: string[]
+  must_not: string[]
+  body: string
+  sha: string
+}
+export interface AgentsConfigResponse { agents: AgentConfigEntry[]; errors: string[] }
+
+export interface ShelfUser { target: string; layer: string; name: string }
+
+export interface SkillShelfEntry {
+  name: string
+  dir: string
+  what: string
+  description: string
+  body: string
+  generated: boolean
+  source: string
+  used_by: ShelfUser[]
+}
+export interface SkillsResponse { skills: SkillShelfEntry[]; errors: string[] }
+
+export interface ToolPackEntry {
+  name: string
+  what: string
+  commands: string[]
+  ref: string
+  used_by: ShelfUser[]
+}
+export interface ToolsResponse { packs: ToolPackEntry[]; errors: string[]; sha: string }
+
+export interface VersionEntry {
+  at: string
+  by: string
+  kind: string
+  target: string
+  sha: string
+  bytes: number
+  lines: number
+  add: number | null
+  del: number | null
+  prev_sha: string | null
+  note: string
+}
+export interface HistoryResponse {
+  kind: string
+  target: string
+  entries: VersionEntry[]
+  current_sha: string
+  current_lines: number
+  current_bytes: number
+  current: string
+}
+export interface VersionContent { entry: VersionEntry; text: string }
+
+// ---- 平台内部运行时：派发层 agent 与作业 ----
+
+export interface RuntimeConfig {
+  configured: boolean
+  base_url: string
+  model: string
+  api_key_env: string
+  has_key: boolean
+  max_turns: number
+  command_timeout_s: number
+  // v1=通用工具循环；langgraph=领域工具图（目前 L1）
+  engine?: string
+}
+export interface JobEvent { at: string; event: string; [k: string]: unknown }
+export interface JobInfo {
+  job_id: string
+  created_at: string
+  updated_at: string
+  package_id: string
+  layer: string
+  auto: boolean
+  by: string
+  agent: string
+  model: string
+  status: string
+  turns: number
+  gate_verdict: string
+  summary: string
+  error: string
+  duration_s: number | null
+  chain: string[]
+  signoff_decision_id?: string
+  // v2 图节点：prepare / agent / tools / finish
+  node?: string
+  engine?: string
+  log_path?: string
+  log?: JobEvent[]
+  active?: boolean
+  finished_at?: string
+}
+export interface RuntimeStatus { config: RuntimeConfig; active_job: JobInfo | null; jobs: JobInfo[] }
+export interface JobsResponse { active: string | null; jobs: JobInfo[] }
+
+/** 已归档任务（不在 /api/state 里，总览单独取） */
+export interface ArchivedTask {
+  task_id: string
+  title: string
+  status: string
+  archived_at: string
+  archived_reason: string
+  iteration_count: number
+  package_count: number
+}
+export interface ArchivedTasksResponse { tasks: ArchivedTask[] }
 
 export interface GuideResponse {
   layers: (LayerGuide & { layer: LayerId; name: string })[]
@@ -389,12 +538,39 @@ export interface BenchmarkInfo {
 
 // ---- 写操作 ----
 
+/** 工作台打开一个登记工件：文本内容 + 元数据；编辑总是生成新 ART，不改共享输入 */
+export interface ArtifactContent {
+  ok: boolean
+  artifact_id: string
+  package_id: string
+  artifact_type: string
+  title: string
+  path: string
+  content_hash: string
+  registered_hash: string
+  stale: boolean
+  size: number
+  binary: boolean
+  truncated: boolean
+  editable: boolean
+  text: string | null
+  source: string
+}
+
 export type ActionId =
   | 'ask' | 'propose' | 'decide' | 'revise' | 'what_if' | 'validate'
   | 'approve' | 'reject' | 'rollback'
   | 'bench_import' | 'task_new' | 'iter_new' | 'new_pkg'
   | 'iter_seal' | 'iter_abort' | 'task_seal'
   | 'brief_out' | 'run_log'
+  | 'agent_save' | 'agent_restore'
+  | 'toolpack_save' | 'toolpack_delete'
+  | 'template_save' | 'template_duplicate'
+  | 'reproject_hosts'
+  | 'redo_layer'
+  | 'task_archive' | 'task_delete'
+  | 'dispatch' | 'stop_job' | 'runtime_config'
+  | 'artifact_save' | 'layer_report'
 
 export interface ActionRequest {
   action: ActionId
@@ -430,6 +606,39 @@ export interface ActionRequest {
   task?: string
   iteration?: string
   layer?: string
+  // ---- 配置管理：agent_save / toolpack_save / template_save 等 ----
+  target?: string
+  id?: string
+  label?: string
+  meta?: Record<string, unknown>
+  body?: string
+  base_sha?: string
+  sha?: string
+  what?: string
+  commands?: string[]
+  ref?: string
+  description?: string
+  nodes?: TemplateNode[]
+  gate_overrides?: Record<string, { required_fields?: string[] }>
+  from?: string
+  // ---- 平台运行时 ----
+  auto?: boolean
+  job?: string
+  base_url?: string
+  api_key?: string
+  api_key_env?: string
+  max_turns?: number
+  command_timeout_s?: number
+  // 运行时引擎：v1 / langgraph
+  engine?: string
+  // artifact_save：工件编号、编辑后的全文、打开时的内容哈希
+  artifact?: string
+  content?: string
+  base_hash?: string
+  // task_delete：必须原样填任务 ID
+  confirm?: string
+  // task_archive：true=恢复
+  restore?: boolean
   // brief_out：造包人署名；run_log：模型与耗时（秒）
   by?: string
   model?: string

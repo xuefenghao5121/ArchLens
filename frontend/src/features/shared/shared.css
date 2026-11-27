@@ -59,7 +59,8 @@
 /* ---- 结论列表：一条结论一行，标记在前 ---- */
 .give { display: flex; gap: 8px; align-items: baseline; font-size: 13px; line-height: 1.6; padding: 3px 0; border-bottom: 1px solid var(--line); }
 .give:last-child { border-bottom: none; }
-.give-id { font-family: var(--font-mono); color: var(--accent); flex-shrink: 0; }
+.give-id { font-weight: 600; color: var(--text); flex-shrink: 0; display: inline-flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.give-sid { font-family: var(--font-mono); font-size: 10px; color: var(--muted); font-weight: 400; }
 .give-text { flex: 1; min-width: 0; }
 .tags { display: inline-flex; gap: 4px; flex-shrink: 0; flex-wrap: wrap; }
 .tag { font-size: 11px; padding: 0 6px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }

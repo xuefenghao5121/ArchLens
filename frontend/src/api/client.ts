@@ -1,11 +1,21 @@
 import type {
   ActionRequest,
   ActionResponse,
+  AgentsConfigResponse,
+  ArchivedTasksResponse,
+  ArtifactContent,
   BenchmarkInfo,
   EvolutionState,
   GuideResponse,
+  HistoryResponse,
+  JobInfo,
+  JobsResponse,
   PackageDetail,
+  RuntimeStatus,
+  SkillsResponse,
   TemplatesResponse,
+  ToolsResponse,
+  VersionContent,
   WorkflowState,
 } from '../types'
 
@@ -85,12 +95,38 @@ export const api = {
 
   benchmarks: () => get<BenchmarkInfo[]>('/api/benchmarks'),
 
+  archivedTasks: () => get<ArchivedTasksResponse>('/api/archived-tasks'),
+
   templates: () => get<TemplatesResponse>('/api/templates'),
+
+  /** Agent 管理：九份定义 + 整组校验错误 */
+  agents: () => get<AgentsConfigResponse>('/api/agents'),
+
+  /** 技能货架（只读） */
+  skills: () => get<SkillsResponse>('/api/skills'),
+
+  /** 工具包货架 */
+  tools: () => get<ToolsResponse>('/api/tools'),
+
+  /** 配置版本历史；给 sha 时取该版本原文 */
+  history: (kind: string, target: string) =>
+    get<HistoryResponse>(`/api/config/history?kind=${encodeURIComponent(kind)}&target=${encodeURIComponent(target)}`),
+  version: (kind: string, target: string, sha: string) =>
+    get<VersionContent>(`/api/config/history?kind=${encodeURIComponent(kind)}&target=${encodeURIComponent(target)}&sha=${encodeURIComponent(sha)}`),
+
+  /** 平台运行时：模型配置是否齐全 + 正在跑的作业 */
+  runtime: () => get<RuntimeStatus>('/api/runtime'),
+  jobs: () => get<JobsResponse>('/api/jobs'),
+  job: (id: string) => get<JobInfo>(`/api/job/${encodeURIComponent(id)}`),
 
   guide: () => get<GuideResponse>('/api/guide'),
 
   /** 层包详情：卡片 + 原始记录 */
   package: (ref: string) => get<PackageDetail>(`/api/package/${encodeURIComponent(ref)}`),
+
+  /** 打开一个登记工件的文本内容（只读；编辑走 action=artifact_save） */
+  artifact: (pkg: string, id: string) =>
+    get<ArtifactContent>(`/api/artifact?pkg=${encodeURIComponent(pkg)}&id=${encodeURIComponent(id)}`),
 
   action: (body: ActionRequest) => {
     const payload: Record<string, unknown> = { ...body }

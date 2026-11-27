@@ -10,6 +10,7 @@
 """
 
 import json
+import re
 from pathlib import Path
 
 # ============================================================ 标准类型定义
@@ -192,144 +193,150 @@ def recommend_template(problem: dict) -> str:
     return ATTRIBUTION_LEVELS[level]["template"]
 
 
-# ============================================================ 场景模板
+# ============================================================ 场景模板（数据文件驱动）
+#
+# 模板从代码搬到 platform/agents/flow_templates.json：id、label、description、节点顺序与
+# 门禁覆盖都是数据；edges 由节点顺序推导。已有任务的 flow_template 引用这些 id，所以
+# id 创建后不可改——要试新流程就复制成新 id。
 
-SCENARIO_TEMPLATES = {
-    "bug_fix_simple": {
-        "description": "issue 已含根因（归因 ≥1），直达修复+验证",
-        "nodes": [
-            {"component": "L1", "alias": "anchor"},
-            {"component": "L5d", "alias": "fix"},
-            {"component": "L8", "alias": "conclude"},
-        ],
-        "edges": [
-            {"from": "anchor", "to": "fix"},
-            {"from": "fix", "to": "conclude"},
-        ],
-        "gate_overrides": {
-            "fix": {"required_fields": ["root_cause", "trigger_condition",
-                                         "fix_location", "stimulus_design"]},
-        },
-    },
-    "bug_fix_with_attribution": {
-        "description": "issue 只有症状（归因 0），需轻量归因后再修",
-        "nodes": [
-            {"component": "L1", "alias": "anchor"},
-            {"component": "L2", "alias": "attribute"},
-            {"component": "L5d", "alias": "fix"},
-            {"component": "L8", "alias": "conclude"},
-        ],
-        "edges": [
-            {"from": "anchor", "to": "attribute"},
-            {"from": "attribute", "to": "fix"},
-            {"from": "fix", "to": "conclude"},
-        ],
-        "gate_overrides": {
-            "fix": {"required_fields": ["root_cause", "trigger_condition",
-                                         "fix_location", "stimulus_design"]},
-        },
-    },
-    "microarch_optimize": {
-        "description": "完整八层——微架构优化（FLOW-1 形态）",
-        "nodes": [
-            {"component": "L1", "alias": "l1"}, {"component": "L2", "alias": "l2"},
-            {"component": "L3", "alias": "l3"}, {"component": "L4", "alias": "l4"},
-            {"component": "L5", "alias": "l5"}, {"component": "L6", "alias": "l6"},
-            {"component": "L7", "alias": "l7"}, {"component": "L8", "alias": "l8"},
-        ],
-        "edges": [
-            {"from": f"l{i}", "to": f"l{i+1}"} for i in range(1, 8)
-        ],
-        "gate_overrides": {},
-    },
-    "batch_calibration": {
-        "description": "批量标定——共享 L1 + 每例 L5d + 共享 L8",
-        "nodes": [
-            {"component": "L1", "alias": "shared_anchor", "shared": True},
-            {"component": "L5d", "alias": "case_N", "repeat": "per_case"},
-            {"component": "L8", "alias": "aggregate", "shared": True},
-        ],
-        "edges": [
-            {"from": "shared_anchor", "to": "case_N"},
-            {"from": "case_N", "to": "aggregate"},
-        ],
-        "gate_overrides": {
-            "case_N": {"required_fields": ["root_cause", "trigger_condition",
-                                            "fix_location", "stimulus_design"]},
-        },
-    },
-    "comparative_study": {
-        "description": "对比研究——跳过设计层",
-        "nodes": [
-            {"component": "L1", "alias": "anchor"},
-            {"component": "L2", "alias": "attribute"},
-            {"component": "L7", "alias": "measure"},
-            {"component": "L8", "alias": "conclude"},
-        ],
-        "edges": [
-            {"from": "anchor", "to": "attribute"},
-            {"from": "attribute", "to": "measure"},
-            {"from": "measure", "to": "conclude"},
-        ],
-        "gate_overrides": {},
-    },
-    "component_design": {
-        "description": "新组件设计——跳过 L1/L2",
-        "nodes": [
-            {"component": "L3", "alias": "design"},
-            {"component": "L4", "alias": "contract"},
-            {"component": "L5", "alias": "implement"},
-            {"component": "L6", "alias": "integrate"},
-            {"component": "L7", "alias": "verify"},
-        ],
-        "edges": [
-            {"from": "design", "to": "contract"},
-            {"from": "contract", "to": "implement"},
-            {"from": "implement", "to": "integrate"},
-            {"from": "integrate", "to": "verify"},
-        ],
-        "gate_overrides": {},
-    },
-    # 不走层的任务（只带目标与 benchmark）：任务长什么样只由模板决定，所以它也是一种模板。
-    # 没有层包；完成与否由人封板。
-    "benchmark_only": {
-        "description": "仅 benchmark（不走层）——只有目标、benchmark 与人的决定",
-        "nodes": [],
-        "edges": [],
-        "gate_overrides": {},
-    },
-}
+TEMPLATES_PATH = Path(__file__).resolve().parents[1] / "agents" / "flow_templates.json"
+_TPL_CACHE = {"sig": None, "data": None}
 
 
-def get_template(name: str) -> dict:
-    if name not in SCENARIO_TEMPLATES:
-        raise ValueError(f"未知模板：{name}（可选：{list(SCENARIO_TEMPLATES)}）")
-    return SCENARIO_TEMPLATES[name]
+def _templates_sig():
+    try:
+        st = TEMPLATES_PATH.stat()
+    except OSError:
+        return None
+    return (str(TEMPLATES_PATH), st.st_mtime_ns, st.st_size)
 
 
-def expand_template(name: str, case_count: int = 1) -> dict:
-    """展开模板为具体的包列表和边列表（batch 模板按 case_count 展开）。"""
+def load_templates():
+    """读模板数据（按 mtime 缓存）。文件缺失或结构不对直接报错——模板是流程的单一来源，
+    不能静默退化成空模板。"""
+    sig = _templates_sig()
+    if sig is not None and _TPL_CACHE["sig"] == sig and _TPL_CACHE["data"] is not None:
+        return _TPL_CACHE["data"]
+    if sig is None:
+        raise ValueError(f"找不到流程模板数据：{TEMPLATES_PATH}")
+    raw = json.loads(TEMPLATES_PATH.read_text(encoding="utf-8"))
+    templates = raw.get("templates")
+    if not isinstance(templates, dict) or not templates:
+        raise ValueError(f"流程模板数据里没有模板：{TEMPLATES_PATH}")
+    data = {
+        "schema_version": raw.get("schema_version", ""),
+        "default": raw.get("default") or next(iter(templates)),
+        "templates": templates,
+    }
+    _TPL_CACHE.update(sig=sig, data=data)
+    return data
+
+
+def template_ids():
+    return list(load_templates()["templates"])
+
+
+def default_template():
+    data = load_templates()
+    d = data.get("default") or ""
+    return d if d in data["templates"] else next(iter(data["templates"]))
+
+
+def template_label(name):
+    tpl = load_templates()["templates"].get(name)
+    return (tpl or {}).get("label", name)
+
+
+def get_template(name):
+    templates = load_templates()["templates"]
+    if name not in templates:
+        raise ValueError(f"未知模板：{name}（可选：{list(templates)}）")
+    return templates[name]
+
+
+def validate_template(tid, tpl):
+    """模板的静态校验：id、人读字段、组件、别名、逐例标记、门禁覆盖。
+    返回错误列表（空 = 通过）。不看类型兼容——现有模板里就有跨类型直连（comparative_study），
+    引擎只用节点顺序，类型检查只适合给建议，不适合拦。"""
+    errs = []
+    if not isinstance(tid, str) or not re.match(r"^[a-z][a-z0-9_]*$", tid or ""):
+        errs.append(f"模板 id {tid!r} 不合法（小写字母开头，只含小写字母/数字/下划线）")
+    if not isinstance(tpl, dict):
+        return errs + [f"模板 {tid}: 须是对象"]
+    for key in ("label", "description"):
+        if not isinstance(tpl.get(key), str) or not tpl.get(key, "").strip():
+            errs.append(f"模板 {tid}: {key} 不能为空")
+    nodes = tpl.get("nodes")
+    if not isinstance(nodes, list):
+        errs.append(f"模板 {tid}: nodes 须是列表")
+        nodes = []
+    aliases, repeats = [], 0
+    for i, nd in enumerate(nodes):
+        where = f"模板 {tid} 第 {i + 1} 个节点"
+        if not isinstance(nd, dict):
+            errs.append(f"{where}: 须是对象")
+            continue
+        comp = nd.get("component")
+        if comp not in LAYER_COMPONENTS:
+            errs.append(f"{where}: 未知组件 {comp!r}（可选：{list(LAYER_COMPONENTS)}）")
+        alias = nd.get("alias")
+        if not isinstance(alias, str) or not re.match(r"^[A-Za-z][A-Za-z0-9_]*$", alias or ""):
+            errs.append(f"{where}: 别名 {alias!r} 不合法（字母开头，只含字母/数字/下划线）")
+        elif alias in aliases:
+            errs.append(f"{where}: 别名 {alias!r} 重复")
+        else:
+            aliases.append(alias)
+        repeat = nd.get("repeat")
+        if repeat not in (None, "per_case"):
+            errs.append(f"{where}: repeat 只支持 per_case（收到 {repeat!r}）")
+        elif repeat == "per_case":
+            repeats += 1
+    if repeats > 1:
+        errs.append(f"模板 {tid}: 最多一个 per_case 节点（现在 {repeats} 个）")
+    overrides = tpl.get("gate_overrides") or {}
+    if not isinstance(overrides, dict):
+        errs.append(f"模板 {tid}: gate_overrides 须是对象")
+        overrides = {}
+    for alias, ov in overrides.items():
+        if alias not in aliases:
+            errs.append(f"模板 {tid}: gate_overrides 的 {alias!r} 不是模板里的节点别名")
+        if not isinstance(ov, dict):
+            errs.append(f"模板 {tid}: gate_overrides.{alias} 须是对象")
+            continue
+        fields = ov.get("required_fields", [])
+        if not isinstance(fields, list) or not all(isinstance(x, str) and x.strip() for x in fields):
+            errs.append(f"模板 {tid}: gate_overrides.{alias}.required_fields 须是非空字符串列表")
+    return errs
+
+
+def expand_template(name, case_count=1):
+    """展开模板为具体的包列表和边列表（per_case 节点按 case_count 展开为 case_1..N）。
+    边由节点顺序推导：相邻节点相连；逐例节点与前后节点扇出 / 扇入。"""
     tpl = get_template(name)
-    nodes, edges = [], []
-    case_aliases = []
-    for node in tpl["nodes"]:
+    count = max(1, int(case_count or 1))
+    raw_nodes = tpl.get("nodes") or []
+    nodes, groups, template_aliases = [], [], []
+    for node in raw_nodes:
+        template_aliases.append(node.get("alias", ""))
         if node.get("repeat") == "per_case":
-            for i in range(case_count):
-                alias = f"case_{i+1}"
-                nodes.append({"component": node["component"], "alias": alias})
-                case_aliases.append(alias)
+            aliases = [f"case_{i + 1}" for i in range(count)]
         else:
-            nodes.append(node)
-    for edge in tpl["edges"]:
-        if edge["to"] == "case_N":
-            for alias in case_aliases:
-                edges.append({"from": edge["from"], "to": alias})
-        elif edge["from"] == "case_N":
-            for alias in case_aliases:
-                edges.append({"from": alias, "to": edge["to"]})
-        else:
-            edges.append(edge)
-    return {"nodes": nodes, "edges": edges, "gate_overrides": tpl["gate_overrides"]}
+            aliases = [node.get("alias", "")]
+        groups.append(aliases)
+        for alias in aliases:
+            nodes.append({"component": node["component"], "alias": alias})
+    edges = []
+    for left, right in zip(groups, groups[1:]):
+        for a in left:
+            for b in right:
+                edges.append({"from": a, "to": b})
+    overrides = {}
+    raw_over = tpl.get("gate_overrides") or {}
+    for alias, group in zip(template_aliases, groups):
+        if alias in raw_over:
+            for expanded in group:
+                overrides[expanded] = raw_over[alias]
+    return {"nodes": nodes, "edges": edges, "gate_overrides": overrides}
 
 
 # ============================================================ 验证

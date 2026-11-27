@@ -1,4 +1,6 @@
-import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../api/client'
 import { useStateQuery } from '../features/shared/useAction'
 import { useOperator } from '../features/tasks/useOperator'
 import './app.css'
@@ -8,12 +10,18 @@ const NAV = [
   { to: '/flow', label: '流程编排', match: (p: string) => p.startsWith('/flow') || p.startsWith('/layer') || p.startsWith('/layers') },
   { to: '/evidence', label: '证据与回溯', match: (p: string) => p.startsWith('/evidence') },
   { to: '/evolution', label: '演进中心', match: (p: string) => p.startsWith('/evolution') },
+  { to: '/agents', label: 'Agent 管理', match: (p: string) => p.startsWith('/agents') },
+  { to: '/shelf', label: '技能与工具', match: (p: string) => p.startsWith('/shelf') },
+  { to: '/templates', label: '编排配置', match: (p: string) => p.startsWith('/templates') },
 ]
 
 export default function AppShell() {
   const location = useLocation()
   // 顶栏环境徽章据实显示：服务端不设 WF_ROOT 时连的就是真实 store，不能再写死 sandbox
   const { data, isError } = useStateQuery()
+  const { data: runtime } = useQuery({
+    queryKey: ['runtime'], queryFn: api.runtime, refetchInterval: 5000,
+  })
   const [agent, setAgent] = useOperator()
   const isolated = data?.store_isolated === true
   const badge = !data
@@ -61,6 +69,15 @@ export default function AppShell() {
           >
             {badge}
           </span>
+          {runtime?.active_job && (
+            <Link
+              className="topbar-job"
+              to={`/layer/${encodeURIComponent(runtime.active_job.package_id)}`}
+              title="平台后台作业：离开页面也会继续跑，日志写在 platform/runtime/jobs/"
+            >
+              作业运行中 · {runtime.active_job.layer}
+            </Link>
+          )}
         </header>
         <main className="content">
           <Outlet />

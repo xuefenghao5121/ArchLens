@@ -1,4 +1,5 @@
-/* 层详情：从流程编排点进来。目标 · 交付 · 证据 · 人的决定 四栏 + 核对回执 + 原始记录 */
+/* 层详情：从流程编排点进来。目标 · 交付 · 证据 三栏 + 一行核对 + 原始记录；
+   人的决定移到页头弹窗，不再占页面空间。 */
 
 .ld { max-width: 1500px; }
 .ld-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
@@ -12,20 +13,20 @@
 .ld-why { font-size: 14px; margin-top: 6px; line-height: 1.6; }
 .ld-meta { display: flex; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 12px; margin-top: 4px; }
 
-/* ---- 四栏：左=目标与这一层是什么，中=交付与人的决定，右=证据 ---- */
+/* ---- 三栏：左=目标，中=交付，右=证据 ---- */
 .ld-grid {
   display: grid; gap: 12px; margin-bottom: 12px;
-  grid-template-columns: minmax(250px, 1fr) minmax(380px, 1.8fr) minmax(270px, 1.1fr);
-  grid-template-areas: "goal out ev" "goal dec ev";
+  grid-template-columns: minmax(250px, 1fr) minmax(400px, 1.9fr) minmax(280px, 1.1fr);
+  grid-template-areas: "goal out ev";
   align-items: start;
 }
 @media (max-width: 1100px) {
-  .ld-grid { grid-template-columns: 1fr; grid-template-areas: "goal" "out" "dec" "ev"; }
+  .ld-grid { grid-template-columns: 1fr; grid-template-areas: "goal" "out" "ev"; }
 }
 .ld-goal { grid-area: goal; }
 .ld-out { grid-area: out; }
 .ld-ev { grid-area: ev; }
-.ld-dec { grid-area: dec; }
+.ld-grid.invalidated { grid-template-columns: minmax(0, 1fr); grid-template-areas: "goal"; }
 
 .goal-text { font-size: 15px; line-height: 1.65; }
 .guide { display: flex; flex-direction: column; gap: 2px; font-size: 13px; line-height: 1.65; }
@@ -37,6 +38,33 @@
 .give-ev { margin-top: 2px; display: flex; flex-direction: column; gap: 1px; }
 .give-ev-item { color: var(--muted); font-size: 12px; }
 .give-ev-item::before { content: '↳ '; }
+.give-ev-missing { color: var(--warning); font-size: 12px; }
+.give-ev-missing::before { content: '↳ '; }
+
+/* ---- 交付文件 / 结论的依据 ---- */
+.artifact-row { display: flex; flex-direction: column; gap: 1px; padding: 3px 0; border-bottom: 1px solid var(--line); }
+.artifact-row:last-child { border-bottom: none; }
+.artifact-path { font-size: 12px; word-break: break-all; }
+.ev-give { border-bottom: 1px solid var(--line); padding: 6px 0; }
+.ev-give:last-of-type { border-bottom: none; }
+.ev-give-head { font-size: 12px; font-weight: 600; display: flex; gap: 6px; align-items: baseline; }
+.ev-missing { color: var(--danger); font-size: 12px; padding: 2px 0 2px 12px; }
+.ev-summary { font-size: 12px; color: var(--muted); margin: 2px 0 4px; }
+.ev-more { margin-top: 6px; }
+.ev-more summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+
+/* ---- 一行核对回执 ---- */
+.checks-compact { margin: 0 0 12px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--panel); }
+.checks-compact summary { cursor: pointer; font-size: 13px; user-select: none; }
+.checks-compact .checks { margin-top: 8px; }
+
+/* ---- 平台内部运行：一行操作条，日志只在有作业时出现 ---- */
+.runtime-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 0 0 10px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.runtime-bar strong { font-size: 13px; }
+
+/* ---- 人的决定：弹窗里不重复 block 外框 ---- */
+.decision-modal .block { border: none; background: transparent; padding: 0; margin: 0; }
+.decision-modal .block-title { display: none; }
 
 /* ---- 核对回执：五行人话 ---- */
 .checks { display: flex; flex-direction: column; gap: 2px; }
@@ -63,3 +91,61 @@
 .agent-line { display: flex; gap: 6px; flex-wrap: wrap; align-items: baseline; }
 .agent-line .tag { margin-right: 4px; }
 .agent-body summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+/* ---- 作业：结果摘要 + 人读时间线 ---- */
+.job-result { margin-top: 8px; }
+.job-result-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12px; margin-bottom: 4px; }
+.job-result-head b { font-size: 13px; }
+.job-summary { font-size: 13px; line-height: 1.65; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); margin-bottom: 8px; }
+.job-timeline { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow: auto; padding-right: 4px; }
+.job-step { border-left: 2px solid var(--line); padding: 2px 0 2px 9px; font-size: 12px; line-height: 1.55; }
+.job-step-head { color: var(--muted); font-size: 11px; margin-bottom: 1px; }
+.job-thought { color: var(--text); }
+.job-action { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.job-act { color: var(--accent); }
+.job-obs { color: var(--muted); }
+.job-note { color: var(--muted); }
+.job-notes { color: var(--muted); font-size: 12px; margin-top: 6px; }
+.job-raw { margin-top: 6px; }
+.job-raw summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.job-raw .cfg-pre { max-height: 220px; }
+
+/* ---- 证据因果：每条结论自己声明的依据 ---- */
+.ev-why { font-size: 12px; line-height: 1.6; color: var(--muted); padding: 6px 8px; border: 1px dashed var(--line); border-radius: 7px; margin: 4px 0 8px; }
+.ev-line-art { display: flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.ev-arrow { color: var(--muted); font-size: 11px; }
+.ev-art-open { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font-size: 12px; text-align: left; }
+.ev-art-open:hover { text-decoration: underline; }
+.ev-line-art .muted { font-size: 12px; }
+
+/* ---- 交付文件打开入口 ---- */
+.artifact-open { display: flex; gap: 8px; align-items: baseline; background: none; border: 0; padding: 0; text-align: left; cursor: pointer; color: inherit; width: 100%; }
+.artifact-open:hover .artifact-path { color: var(--accent); }
+.artifact-open-word { color: var(--accent); font-size: 11px; white-space: nowrap; }
+
+/* ---- 工件查看/编辑弹窗 ---- */
+.artifact-modal { width: 860px; max-width: 100%; max-height: calc(100vh - 80px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+.artifact-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.artifact-head > div { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; min-width: 0; }
+.artifact-head strong { font-size: 15px; }
+.artifact-id { font-size: 11px; color: var(--muted); }
+.artifact-meta { display: flex; gap: 8px 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 6px 0 8px; word-break: break-all; }
+.artifact-text, .artifact-editor { width: 100%; box-sizing: border-box; margin: 8px 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); color: var(--text); font-family: var(--font-mono); font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; overflow: auto; max-height: 55vh; }
+.artifact-editor { min-height: 360px; resize: vertical; white-space: pre; }
+.artifact-edit-hint { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.artifact-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+
+/* 结论行里的工件按钮：沿用 evidence 的箭头，但去掉默认按钮外观 */
+.give-ev-open { background: none; border: 0; padding: 0; cursor: pointer; text-align: left; font: inherit; color: var(--accent); }
+.give-ev-open:hover { text-decoration: underline; }
+.job-summary-more { margin-left: 6px; font-size: 11px; }
+.receipt.pending.stale { border-left-color: var(--danger); }
+
+/* ---- 结论按类型归组：先看总览，再按需展开 ---- */
+.conclusion-summary { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12px; margin: 4px 0 6px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+.conclusion-summary strong { font-size: 13px; }
+.conclusion-summary span { color: var(--muted); }
+.give-group { margin: 4px 0; border-left: 2px solid var(--line); padding-left: 8px; }
+.give-group > summary { cursor: pointer; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12px; padding: 3px 0; user-select: none; }
+.give-group-kind { font-weight: 600; color: var(--text); }
+.give-group-ids { color: var(--muted); font-family: var(--font-mono); font-size: 11px; }

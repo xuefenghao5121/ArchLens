@@ -13,6 +13,7 @@
     "layer_interface": {"versions": ["1.0"], "latest": "1.0", "status": "active"},
     "task_record": {"versions": ["1.0", "1.1"], "latest": "1.1", "status": "active"},
     "layer_agent": {"versions": ["1.0"], "latest": "1.0", "status": "active"},
+    "flow_template": {"versions": ["1.0"], "latest": "1.0", "status": "active"},
     "workflow_state": {"versions": ["0.1", "0.2", "0.3", "0.4", "0.5"], "latest": "0.5", "status": "active"}
   },
   "compat_notes": {

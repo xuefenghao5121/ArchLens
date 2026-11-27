@@ -57,14 +57,17 @@ function Trace({ card, pkgOf }: { card: LayerCard; pkgOf: (id: string) => LayerP
   )
 }
 
-function LayerBlock({ node, pkgOf, reusedOf, truth, frames }: {
+function LayerBlock({ node, pkgOf, reusedOf, truth, frames, dead }: {
   node: FlowNode
   pkgOf: (id: string) => LayerPackageView | undefined
   reusedOf: (id: string) => string | undefined
   truth: Record<string, string>
   frames: Record<string, string>
+  dead: LayerPackageView[]
 }) {
   const pkgs = node.own.concat(node.reused).map(pkgOf).filter((p): p is LayerPackageView => !!p)
+  const shown = new Set(pkgs.map((p) => p.package_id))
+  const history = dead.filter((p) => !shown.has(p.package_id))
   return (
     <div className="evb">
       <div className="evb-head">
@@ -72,9 +75,30 @@ function LayerBlock({ node, pkgOf, reusedOf, truth, frames }: {
         {pkgs.length > 0 && <StateChip word={pkgs.length === 1 ? pkgs[0].state : node.state} />}
         <span className="muted small">{pkgs[0]?.card.guide.question ?? ''}</span>
       </div>
-      {pkgs.length === 0 && <div className="muted small">这一轮没有这一层的包。</div>}
+      {pkgs.length === 0 && history.length === 0 && <div className="muted small">这一轮没有这一层的包。</div>}
+      {history.length > 0 && (
+        <div className="evb-history">
+          历史：{history.map((p) => (
+            <Link key={p.package_id} to={layerHref(p.package_id)}>
+              {p.title || p.package_id}（已作废，仅存档）
+            </Link>
+          ))}
+        </div>
+      )}
       {pkgs.map((p) => {
         const c = p.card
+        if (p.state === '已作废') {
+          return (
+            <div key={p.package_id} className="evb-pkg invalidated">
+              <div className="notice err">
+                <strong>本包已作废</strong>
+                <div>{c.state.why}</div>
+                <div>作废前的结论与证据不在这里展开；原始记录在层详情里。</div>
+              </div>
+              <Link className="evb-more" to={layerHref(p.package_id)}>查看作废包详情 →</Link>
+            </div>
+          )
+        }
         const ev = new Map(c.evidence.map((e) => [e.id, e]))
         return (
           <div key={p.package_id} className="evb-pkg">
@@ -87,7 +111,7 @@ function LayerBlock({ node, pkgOf, reusedOf, truth, frames }: {
             <Trace card={c} pkgOf={pkgOf} />
             <div className="block-k">结论</div>
             {c.interface.gives.length
-              ? c.interface.gives.map((g) => <GiveRow key={g.id + g.text} g={g} ev={ev} truth={truth} frames={frames} />)
+              ? c.interface.gives.map((g, i) => <GiveRow key={g.id + g.text} idx={i} g={g} ev={ev} truth={truth} frames={frames} />)
               : <div className="muted small">（还没有产出）</div>}
             <div className="block-k">证据</div>
             {c.evidence.length === 0 && <div className="muted small">还没有登记任何证据。</div>}
@@ -140,6 +164,15 @@ export default function Evidence() {
   const truth = guide?.truth ?? TRUTH_LABEL
   const frames = guide?.frames ?? FRAME_LABEL
   const nodes = iteration?.nodes ?? []
+  // 同一轮里已作废的历史包：重做后它们不在这条链上，但要在证据页留一个明确的入口
+  const deadByLayer = new Map<string, LayerPackageView[]>()
+  for (const grp of Object.values(data.layers)) {
+    for (const p of grp.packages) {
+      if (p.state === '已作废' && p.card.iteration_id === iteration?.iteration_id) {
+        deadByLayer.set(p.card.layer, [...(deadByLayer.get(p.card.layer) ?? []), p])
+      }
+    }
+  }
 
   return (
     <div className="evp">
@@ -159,7 +192,8 @@ export default function Evidence() {
           {nodes.map((n, i) => (
             <div key={n.layer}>
               {i > 0 && <div className="evb-down" aria-hidden>↓ 交给下一层</div>}
-              <LayerBlock node={n} pkgOf={pkgOf} reusedOf={reusedOf} truth={truth} frames={frames} />
+              <LayerBlock node={n} pkgOf={pkgOf} reusedOf={reusedOf} truth={truth} frames={frames}
+                dead={deadByLayer.get(n.layer) ?? []} />
             </div>
           ))}
         </div>

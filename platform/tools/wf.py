@@ -82,20 +82,10 @@ REC_STRENGTH = {"L1": "V1", "L2": "V2", "L3": "V1", "L4": "V2",
 STRENGTH_ORDER = ["V0", "V1", "V2", "V3"]
 
 # 任务与迭代（纪律六：任务章程 + Ship Gate）。任务长什么样只由流程模板决定（没有任务类型、没有成功判据）。
+# 流程模板是数据：platform/agents/flow_templates.json（id 创建后不可改，任务记录引用它）。
 TASK_LIVE = ("draft", "active")           # 进行中；sealed / aborted 默认折叠，不进前沿
 DECISION_SUMMARY_MAX = 80                 # 决策「一句话结论」的长度上限
 BENCH_IMPORT_MAX_FILES = 20000            # 题集目录入册的文件数上限
-FLOW_TEMPLATES = ("microarch_optimize", "bug_fix_simple", "bug_fix_with_attribution",
-                  "comparative_study", "component_design", "batch_calibration", "benchmark_only")
-TEMPLATE_LABEL = {
-    "microarch_optimize": "完整八层（观测 → 归因 → 方案 → 契约 → RTL → 集成 → 实验 → 结论）",
-    "bug_fix_simple": "缺陷修复直达（观测 → RTL 修复 → 结论）",
-    "bug_fix_with_attribution": "缺陷修复加归因（观测 → 归因 → RTL 修复 → 结论）",
-    "comparative_study": "对比研究（观测 → 归因 → 实验 → 结论）",
-    "component_design": "新组件设计（方案 → 契约 → RTL → 集成 → 实验）",
-    "batch_calibration": "批量标定（共享观测 → 逐例修复 → 汇总结论）",
-    "benchmark_only": "仅 benchmark（不走层：只有目标、benchmark 与人的决定）",
-}
 # 历史章程里可能还带着的几项（不再作为输入项，只在展示时附上存档）
 GOAL_FIELDS = (("budget", "预算"), ("tradeoff_policy", "权衡政策"), ("stop_rule", "停止规则"))
 # 目标写成了「过程要求」时的提醒词。只提醒、不拦截：这是判断，不是格式。
@@ -149,13 +139,43 @@ def decision_headline(d, lookup=None):
     return (clause if len(clause) >= 6 else text[:50].strip()), True
 
 
+_LB_CACHE = {}
+
+
 def _load_layer_bus():
+    """按 layer_bus.py 的 mtime 缓存模块。模板数据本身由 layer_bus 按 mtime 再缓存，
+    所以改 flow_templates.json 后下一次调用就能看到，不用重启服务。"""
     import importlib.util as ilu
-    spec = ilu.spec_from_file_location("layer_bus",
-                                        str(Path(__file__).parent / "layer_bus.py"))
+    p = Path(__file__).parent / "layer_bus.py"
+    sig = p.stat().st_mtime_ns if p.exists() else None
+    if _LB_CACHE.get("sig") == sig and _LB_CACHE.get("value") is not None:
+        return _LB_CACHE["value"]
+    spec = ilu.spec_from_file_location("layer_bus", str(p))
     lb = ilu.module_from_spec(spec)
     spec.loader.exec_module(lb)
+    _LB_CACHE.update(sig=sig, value=lb)
     return lb
+
+
+def template_ids():
+    """流程模板 id（按数据文件里的顺序）。"""
+    return _load_layer_bus().template_ids()
+
+
+def default_template():
+    return _load_layer_bus().default_template()
+
+
+def template_label(tid):
+    return _load_layer_bus().template_label(tid)
+
+
+def is_layered_template(tid):
+    """这个模板是否有层包（没有框的模板 = 只带目标/benchmark，由人封板）。"""
+    try:
+        return bool(_load_layer_bus().get_template(tid).get("nodes"))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # ---------------------------------------------------------------- 精简 JSON Schema 校验器
@@ -518,6 +538,16 @@ class WF:
             _, owner = self.iteration_of(env, tasks)
             (own if owner is not None and owner.get("iteration_id") == it["iteration_id"]
              else others).append(env)
+        # 同一层既有重做后的活包、又有作废/被取代的旧包时，旧包不参与这一轮的呈现与状态：
+        # 旧包仍在 store 里（可按包号查、证据页列为历史），但不再把这一框拖成「已作废」。
+        by_layer = {}
+        for env in own:
+            by_layer.setdefault(env["identity"]["layer_id"], []).append(env)
+        live_layers = {L for L, envs in by_layer.items()
+                       if any(e.get("lifecycle", {}).get("status") not in BAD_LIFECYCLE for e in envs)}
+        own = [e for e in own
+               if e["identity"]["layer_id"] not in live_layers
+               or e.get("lifecycle", {}).get("status") not in BAD_LIFECYCLE]
         by_id = {e["identity"]["package_id"]: e for e in own + others}
         own_ids = {e["identity"]["package_id"] for e in own}
         dist, queue = {}, []
@@ -947,6 +977,8 @@ class WF:
                 dec_task[it.get("entry_decision_id")] = tid
         live_refs, dec_pkgs, pkg_task = set(), {}, {}
         for _, env in self.find_packages():
+            if (env.get("lifecycle") or {}).get("status") in BAD_LIFECYCLE:
+                continue  # 作废/被取代的包上的待批事项不再进人的决定队列
             pid = env["identity"]["package_id"]
             owner, _ = self.iteration_of(env, tasks)
             pkg_task[pid] = owner["task_id"] if owner else None
@@ -985,6 +1017,24 @@ class WF:
         # 署名即批准主体：不能为空，也不能冒用待批标记（否则"批准"不构成批准，原决策却被顶掉）
         if not user or user == "pending-user":
             raise SystemExit("错误：批准/驳回必须署名，且署名不能是 pending-user")
+        # 批准必须对“当时看到的这份内容”有效：待签生成后接口卡又改过，就不能再拿旧待签批准新内容。
+        # 驳回不拦——人可以拒绝一个已经过时的提议；需要继续时再核对生成当前内容的待签。
+        scope = str(d.get("scope") or "")
+        if not scope:
+            # 旧 propose 可能没写 scope：从引用它的层包里反查，才能判断内容指纹是否过期。
+            for _, env in self.find_packages():
+                if dec_id in env.get("decision_refs", []):
+                    scope = env["identity"]["package_id"]
+                    break
+        if not reject and scope.startswith("PKG-") and d.get("content_sha"):
+            try:
+                _, senv = self.resolve_pkg(scope)
+            except SystemExit:
+                senv = None
+            if senv is not None and d["content_sha"] != interface_hash(senv):
+                raise SystemExit(
+                    "错误：待签事项生成后内容已改，旧待签已失效；不能批准旧内容。"
+                    "请先点「核对」，平台会按当前内容生成新的待签事项。")
         verb = "驳回" if reject else "批准"
         if reject:
             dtype, rationale = "reject", (reason or f"驳回 {dec_id}")
@@ -1184,7 +1234,10 @@ FRAME_LABEL = {"F0": "仿真器默认参数（未校准）", "F1": "契约拍定
 # 每层一份 platform/agents/<层目录>/agent.md，另有一份调度 agent。frontmatter 是 YAML 的子集：
 # 标量，或写成 JSON 数组的列表。tools 只能引用 toolpacks.json 里的包名。
 AGENTS_DIR = Path(__file__).resolve().parents[1] / "agents"
-SKILLS_DIR = Path(__file__).resolve().parents[2] / ".agents" / "skills"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SKILLS_DIR = REPO_ROOT / ".agents" / "skills"
+VERSIONS_DIR = AGENTS_DIR / ".versions"
+VERSION_INDEX = VERSIONS_DIR / "index.jsonl"
 _AGENT_CACHE = {}
 
 
@@ -1211,54 +1264,73 @@ def _agent_sig():
     return tuple((str(f), f.stat().st_mtime_ns) for f in files if f.exists())
 
 
+def _agent_schema():
+    schema_path = Path(__file__).resolve().parents[1] / "schemas" / "layer_agent.json"
+    return json.loads(schema_path.read_text(encoding="utf-8"))
+
+
+def _pack_errors(packs):
+    errs = []
+    for name, pk in packs.items():
+        if not pk.get("what") or not (pk.get("commands") or pk.get("ref")):
+            errs.append(f"toolpacks.{name}：缺 what，或 commands / ref 都没有")
+    return errs
+
+
+def _agent_file_errors(meta, body, rel, packs, schema=None):
+    """单份定义的结构与引用校验。agent_defs 与配置页共用这一份规则。"""
+    schema = _agent_schema() if schema is None else schema
+    errs = [f"{rel}: {e}" for e in validate(meta, schema)]
+    if not str(body or "").strip():
+        errs.append(f"{rel}: 正文为空——正文是人读的职责、步骤、完成标准与纪律")
+    key = meta.get("layer")
+    if key == "orchestrator":
+        if meta.get("role") != "orchestrator":
+            errs.append(f"{rel}: role 须为 orchestrator")
+    elif key in LAYER_DIR:
+        want = LAYER_AGENT[key]
+        if meta.get("role") != want:
+            errs.append(f"{rel}: role={meta.get('role')!r} 与 LAYER_AGENT[{key}]={want!r} 不一致")
+    else:
+        errs.append(f"{rel}: layer 须为 L1..L8 或 orchestrator（收到 {key!r}）")
+    for sk in meta.get("skills", []):
+        if SKILLS_DIR.exists() and not (SKILLS_DIR / str(sk) / "SKILL.md").exists():
+            errs.append(f"{rel}: skills 里的 {sk!r} 在 .agents/skills 里找不到")
+    for t in meta.get("tools", []):
+        if t not in packs:
+            errs.append(f"{rel}: tools 里的 {t!r} 不在工具包清单里")
+    return errs
+
+
 def agent_defs():
     """读九份定义与工具包清单并做一致性校验；按文件修改时间缓存。
     返回 {"layers": {L1..L8: 定义}, "orchestrator": 定义, "packs": 工具包}。定义有问题直接报错。"""
     sig = _agent_sig()
     if _AGENT_CACHE.get("sig") == sig:
         return _AGENT_CACHE["value"]
-    errs = []
     packs_path = AGENTS_DIR / "toolpacks.json"
     if not packs_path.exists():
         raise SystemExit(f"错误：缺工具包清单：{packs_path}")
     packs = json.loads(packs_path.read_text(encoding="utf-8")).get("packs", {})
-    for name, pk in packs.items():
-        if not pk.get("what") or not (pk.get("commands") or pk.get("ref")):
-            errs.append(f"toolpacks.{name}：缺 what，或 commands / ref 都没有")
-    schema_path = Path(__file__).resolve().parents[1] / "schemas" / "layer_agent.json"
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    errs = _pack_errors(packs)
+    schema = _agent_schema()
     layers, orch, host_names = {}, None, []
     for p in sorted(AGENTS_DIR.glob("*/agent.md")):
         meta, body = _parse_agent_frontmatter(p.read_text(encoding="utf-8"))
         rel = p.relative_to(AGENTS_DIR).as_posix()
-        errs += [f"{rel}: {e}" for e in validate(meta, schema)]
-        if not body.strip():
-            errs.append(f"{rel}: 正文为空——正文是人读的职责、步骤、完成标准与纪律")
+        errs += _agent_file_errors(meta, body, rel, packs, schema)
         key = meta.get("layer")
         entry = dict(meta, body=body.strip(), file=rel)
         if key == "orchestrator":
             orch = entry
         elif key in LAYER_DIR:
             layers[key] = entry
-        else:
-            errs.append(f"{rel}: layer 须为 L1..L8 或 orchestrator（收到 {key!r}）")
         host_names.append(meta.get("host_name"))
-        for sk in meta.get("skills", []):
-            if SKILLS_DIR.exists() and not (SKILLS_DIR / str(sk) / "SKILL.md").exists():
-                errs.append(f"{rel}: skills 里的 {sk!r} 在 .agents/skills 里找不到")
-        for t in meta.get("tools", []):
-            if t not in packs:
-                errs.append(f"{rel}: tools 里的 {t!r} 不在工具包清单里")
     for L in LAYER_DIR:
         if L not in layers:
             errs.append(f"缺 {L} 的 agent 定义")
-        elif layers[L].get("role") != LAYER_AGENT[L]:
-            errs.append(f"{layers[L].get('file')}: role={layers[L].get('role')!r} "
-                        f"与 LAYER_AGENT[{L}]={LAYER_AGENT[L]!r} 不一致")
     if orch is None:
         errs.append("缺调度 agent 定义（layer: orchestrator）")
-    elif orch.get("role") != "orchestrator":
-        errs.append(f"{orch.get('file')}: role 须为 orchestrator")
     dup = {h for h in host_names if host_names.count(h) > 1}
     if dup:
         errs.append("host_name 重复：" + "、".join(sorted(str(x) for x in dup if x)))
@@ -1311,6 +1383,601 @@ def agent_summary(defn):
         "writes": list(defn.get("writes", [])),
         "must_not": list(defn.get("must_not", [])),
     }
+
+
+# ---------------------------------------------------------------- 配置管理：agent / skills / 工具包 / 流程模板
+#
+# 界面上改的是「平台的配置」，不是研究数据：agent 定义、工具包清单、流程模板。
+# 三条硬规则：
+#   1. 写盘前把整组校验跑一遍——定义一坏，整个看板都读不出来，不能靠写完再发现。
+#   2. 每次保存前先快照当前内容，记时间/署名/指纹/行数增减；可看历史、对比、回滚。
+#   3. 保存 agent / 工具包后立刻重投影 .zcode/agents——否则宿主投影漂移，回归必挂。
+
+DIR_LAYER = {v: k for k, v in LAYER_DIR.items()}
+DIR_LAYER["orchestrator"] = "orchestrator"
+_AGENT_META_KEYS = ("layer", "name", "host_name", "role", "skills", "tools", "writes", "must_not")
+
+
+def _sha(text):
+    return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
+
+
+def _json_text(obj):
+    return json.dumps(obj, ensure_ascii=False, indent=2) + "\n"
+
+
+def _save_text_atomic(path, text):
+    path = Path(path)
+    tmp = Path(str(path) + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def _diff_lines(old, new):
+    """行级差异：(新增行数, 删除行数)。"""
+    import difflib
+    a, b = str(old).splitlines(), str(new).splitlines()
+    add = dele = 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b).get_opcodes():
+        if tag in ("replace", "delete"):
+            dele += i2 - i1
+        if tag in ("replace", "insert"):
+            add += j2 - j1
+    return add, dele
+
+
+def _version_ext(kind):
+    if kind not in ("agent", "toolpacks", "templates"):
+        raise SystemExit(f"错误：未知的配置类型 {kind!r}（可选：agent / toolpacks / templates）")
+    return "md" if kind == "agent" else "json"
+
+
+def _version_object_path(kind, sha):
+    d = VERSIONS_DIR / "objects"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{sha}.{_version_ext(kind)}"
+
+
+def _version_entries(kind, target):
+    if not VERSION_INDEX.exists():
+        return []
+    return [r for r in load_jsonl(VERSION_INDEX)
+            if r.get("kind") == kind and r.get("target") == target]
+
+
+def _record_version(kind, target, text, by, note="", add=None, dele=None, prev_sha=None):
+    """把一份内容记进历史：对象按内容寻址落盘，索引追加一行。"""
+    sha = _sha(text)
+    obj = _version_object_path(kind, sha)
+    if not obj.exists():
+        _save_text_atomic(obj, str(text))
+    entry = {"at": now(), "by": by, "kind": kind, "target": target, "sha": sha,
+             "bytes": len(str(text).encode("utf-8")), "lines": len(str(text).splitlines()),
+             "add": add, "del": dele, "prev_sha": prev_sha, "note": note}
+    VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
+    append_jsonl(VERSION_INDEX, entry)
+    return entry
+
+
+def _ensure_snapshot(kind, target, text, by):
+    """保存前快照：当前内容还没进历史就补一条（不重复记同一个指纹）。"""
+    sha = _sha(text)
+    entries = _version_entries(kind, target)
+    if any(e.get("sha") == sha for e in entries):
+        return None
+    prev = entries[-1].get("sha") if entries else None
+    return _record_version(kind, target, text, by, "保存前快照", None, None, prev)
+
+
+def list_versions(kind, target):
+    _version_ext(kind)
+    return list(reversed(_version_entries(kind, target)))
+
+
+def read_version(kind, target, sha):
+    _version_ext(kind)
+    entry = next((e for e in _version_entries(kind, target) if e.get("sha") == sha), None)
+    if not entry:
+        raise SystemExit(f"错误：找不到这个版本（{kind}/{target}/{sha[:12]}）")
+    obj = _version_object_path(kind, sha)
+    if not obj.exists():
+        raise SystemExit(f"错误：版本对象不见了：{obj.name}")
+    return {"entry": entry, "text": obj.read_text(encoding="utf-8")}
+
+
+def _config_path(kind, target):
+    _version_ext(kind)
+    if kind == "agent":
+        if target not in DIR_LAYER:
+            raise SystemExit(f"错误：未知的 agent 目录 {target!r}")
+        return AGENTS_DIR / target / "agent.md"
+    if kind == "toolpacks":
+        if target not in ("toolpacks", ""):
+            raise SystemExit(f"错误：toolpacks 的 target 须为空或 'toolpacks'")
+        return AGENTS_DIR / "toolpacks.json"
+    if target not in ("flow_templates", ""):
+        raise SystemExit("错误：templates 的 target 须为空或 'flow_templates'")
+    return _load_layer_bus().TEMPLATES_PATH
+
+
+def _agent_path(target):
+    if target not in DIR_LAYER:
+        raise SystemExit("错误：未知的 agent 目录 " + repr(target)
+                         + "（可选：" + "、".join([*LAYER_DIR.values(), "orchestrator"]) + "）")
+    return AGENTS_DIR / target / "agent.md"
+
+
+def _raw_agent_files():
+    """逐个读 agent.md，解析失败也返回（带 parse_error），供配置页与校验使用。"""
+    out = []
+    for p in sorted(AGENTS_DIR.glob("*/agent.md")):
+        rel = p.relative_to(AGENTS_DIR).as_posix()
+        text = p.read_text(encoding="utf-8")
+        item = {"target": p.parent.name, "file": rel, "text": text, "parse_error": ""}
+        try:
+            meta, body = _parse_agent_frontmatter(text)
+        except json.JSONDecodeError as e:
+            meta, body = {}, text
+            item["parse_error"] = f"{rel}: frontmatter 解析失败（列表要写成 JSON 数组）：{e}"
+        item.update(meta=meta, body=body)
+        out.append(item)
+    return out
+
+
+def _read_packs():
+    path = AGENTS_DIR / "toolpacks.json"
+    if not path.exists():
+        return {}, [f"缺工具包清单：{path}"]
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        return {}, [f"toolpacks.json 不是合法 JSON：{e}"]
+    packs = raw.get("packs") if isinstance(raw, dict) else None
+    if not isinstance(packs, dict):
+        return {}, ["toolpacks.json 里没有 packs 对象"]
+    return packs, _pack_errors(packs)
+
+
+def _toolpack_set_errors(packs, agents=None):
+    errs = _pack_errors(packs)
+    for a in (agents if agents is not None else _raw_agent_files()):
+        for t in a["meta"].get("tools", []):
+            if t not in packs:
+                errs.append(f"{a['file']}: tools 里的 {t!r} 不在工具包清单里")
+    return errs
+
+
+def _render_agent_md(meta, body, layout_text=""):
+    """按引擎的 YAML 子集写回：标量 + JSON 数组，键顺序固定。
+    layout_text 给当前文件原文：沿用它的「frontmatter 后空行」与结尾空行习惯，
+    避免只改一个字段却把整份文件的格式重排一遍（历史 diff 会全是噪声）。"""
+    front = ["---"]
+    for k in ("layer", "name", "host_name", "role"):
+        v = str(meta.get(k, "") or "")
+        if "\n" in v:
+            raise SystemExit(f"错误：{k} 不能含换行")
+        front.append(f"{k}: {v}")
+    for k in ("skills", "tools", "writes", "must_not"):
+        front.append(f"{k}: " + json.dumps(list(meta.get(k) or []), ensure_ascii=False))
+    front.append("---")
+    lead, trail = "", "\n"
+    if layout_text:
+        m = re.match(r"^---\n.*?\n---\n(.*)$", layout_text, re.S)
+        if m:
+            raw = m.group(1)
+            lead = "\n" if raw.startswith("\n") else ""
+            trail = "\n\n" if raw.endswith("\n\n") else "\n"
+    return "\n".join(front) + "\n" + lead + str(body or "").strip() + trail
+
+
+def collect_agent_config():
+    """配置页读模型：九份定义 + 校验错误。坏文件也让页面能打开——否则定义一写坏就再也
+    进不了界面去修。"""
+    packs, pack_errors = _read_packs()
+    schema = _agent_schema()
+    agents, errors = [], list(pack_errors)
+    host_targets = {}
+    files = _raw_agent_files()
+    for a in files:
+        if a["parse_error"]:
+            errors.append(a["parse_error"])
+        errors += _agent_file_errors(a["meta"], a["body"], a["file"], packs, schema)
+        target = a["target"]
+        if target not in DIR_LAYER:
+            errors.append(f"{a['file']}: 目录 {target!r} 不是已知的 agent 目录")
+        elif a["meta"].get("layer") != DIR_LAYER[target]:
+            errors.append(f"{a['file']}: layer={a['meta'].get('layer')!r} 与目录 {target}"
+                          f"（应为 {DIR_LAYER[target]!r}）不一致")
+        host = a["meta"].get("host_name")
+        if host:
+            host_targets.setdefault(host, []).append(target)
+        agents.append({
+            "target": target, "layer": a["meta"].get("layer", ""),
+            "name": a["meta"].get("name", ""), "host_name": host or "",
+            "role": a["meta"].get("role", ""),
+            "role_label": ROLE_LABEL.get(a["meta"].get("role"), a["meta"].get("role", "")),
+            "file": f"platform/agents/{a['file']}",
+            "skills": list(a["meta"].get("skills") or []),
+            "tools": list(a["meta"].get("tools") or []),
+            "writes": list(a["meta"].get("writes") or []),
+            "must_not": list(a["meta"].get("must_not") or []),
+            "body": a["body"].strip(), "sha": _sha(a["text"]),
+        })
+    for host, targets in host_targets.items():
+        if len(targets) > 1:
+            errors.append(f"host_name 重复：{host}（{'、'.join(targets)}）")
+    for L, d in LAYER_DIR.items():
+        if not (AGENTS_DIR / d / "agent.md").exists():
+            errors.append(f"缺 {L} 的 agent 定义（{d}/agent.md）")
+    if not (AGENTS_DIR / "orchestrator" / "agent.md").exists():
+        errors.append("缺调度 agent 定义（orchestrator/agent.md）")
+    agents.sort(key=lambda a: (0, int(a["layer"][1:])) if re.fullmatch(r"L[1-8]", a["layer"] or "")
+                else (1, 0))
+    return {"agents": agents, "errors": errors}
+
+
+def validate_agent_draft(target, meta, body, base_sha=""):
+    """保存前校验：目录、layer、role、host_name 唯一、skills/tools 引用、正文。"""
+    path = _agent_path(target)
+    if not path.exists():
+        raise SystemExit(f"错误：定义文件不存在：{path}")
+    cur = path.read_text(encoding="utf-8")
+    if base_sha and _sha(cur) != base_sha:
+        raise SystemExit("错误：这份定义已被别人改过（指纹不一致）。刷新后再改，别覆盖别人的改动")
+    packs, pack_errors = _read_packs()
+    errs = list(pack_errors) + _agent_file_errors(meta, body, path.relative_to(AGENTS_DIR).as_posix(), packs)
+    expected = DIR_LAYER[target]
+    if meta.get("layer") != expected:
+        errs.append(f"layer={meta.get('layer')!r} 与目录 {target} 不一致（应为 {expected!r}）")
+    for other in _raw_agent_files():
+        if other["target"] == target:
+            continue
+        if other["meta"].get("host_name") and other["meta"].get("host_name") == meta.get("host_name"):
+            errs.append(f"host_name {meta.get('host_name')!r} 已被 {other['file']} 使用")
+    return errs
+
+
+def _reproject_hosts():
+    """把 platform/agents/*/agent.md 重新投影成 .zcode/agents/*.md。返回投影结果；
+    失败不抛异常——保存本身已经成功，界面需要知道「投影没跟上」。"""
+    try:
+        import importlib.util as ilu
+        p = Path(__file__).parent / "bind_hosts.py"
+        spec = ilu.spec_from_file_location("bind_hosts", str(p))
+        mod = ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        res = mod.project_agents(check=False)
+        return {"ok": True, "written": res.get("written", 0), "drift": res.get("drift", [])}
+    except SystemExit as e:
+        return {"ok": False, "error": str(e)}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def save_agent_definition(target, meta, body, by, base_sha=""):
+    by = (by or "").strip()
+    if not by:
+        raise SystemExit("错误：保存定义要记名——请先填操作人")
+    path = _agent_path(target)
+    if not path.exists():
+        raise SystemExit(f"错误：定义文件不存在：{path}")
+    cur = path.read_text(encoding="utf-8")
+    if base_sha and _sha(cur) != base_sha:
+        raise SystemExit("错误：这份定义已被别人改过（指纹不一致）。刷新后再改，别覆盖别人的改动")
+    errs = validate_agent_draft(target, meta, body)
+    if errs:
+        raise SystemExit("错误：定义没通过校验，未写盘：\n  " + "\n  ".join(errs))
+    clean = {k: meta.get(k, [] if k in ("skills", "tools", "writes", "must_not") else "")
+             for k in _AGENT_META_KEYS}
+    new = _render_agent_md(clean, body, cur)
+    old_meta, _ = _parse_agent_frontmatter(cur)
+    if new == cur:
+        return {"changed": False, "sha": _sha(cur), "snapshot": None,
+                "projection": {"ok": True, "written": 0, "drift": []}, "errors": []}
+    _ensure_snapshot("agent", target, cur, by)
+    _save_text_atomic(path, new)
+    add, dele = _diff_lines(cur, new)
+    entry = _record_version("agent", target, new, by, "保存", add, dele, _sha(cur))
+    old_host = old_meta.get("host_name")
+    if old_host and old_host != clean.get("host_name"):
+        stale = REPO_ROOT / ".zcode" / "agents" / f"{old_host}.md"
+        try:
+            stale.unlink()
+        except FileNotFoundError:
+            pass
+    projection = _reproject_hosts()
+    try:
+        agent_defs()  # 刷新缓存；若其它文件也坏了，把整组错误带回去
+        remaining = []
+    except SystemExit as e:
+        remaining = [str(e)]
+    return {"changed": True, "sha": _sha(new), "snapshot": entry,
+            "projection": projection, "errors": remaining}
+
+
+def collect_skills():
+    """技能货架（只读）：用途、正文、是否由方法论源生成、被哪些 agent 使用。"""
+    used = {}
+    for a in _raw_agent_files():
+        for sk in a["meta"].get("skills", []):
+            used.setdefault(sk, []).append({"target": a["target"], "layer": a["meta"].get("layer", ""),
+                                            "name": a["meta"].get("name", "")})
+    skills = []
+    if SKILLS_DIR.exists():
+        for d in sorted(SKILLS_DIR.iterdir()):
+            p = d / "SKILL.md"
+            if not p.is_file():
+                continue
+            text = p.read_text(encoding="utf-8")
+            meta, body = _parse_skill_md(text)
+            name = (meta.get("name") or d.name).strip()
+            desc = (meta.get("description") or "").strip()
+            m = re.search(r"GENERATED from (platform/methodology/[^\s—]+)", text)
+            skills.append({
+                "name": name, "dir": d.name,
+                "what": _s(re.split(r"[。；;]", desc)[0], 60) if desc else "",
+                "description": desc, "body": body.strip(),
+                "generated": bool(m), "source": m.group(1) if m else "",
+                "used_by": used.get(name, []) or used.get(d.name, []),
+            })
+    return {"skills": skills, "errors": []}
+
+
+def _parse_skill_md(text):
+    """SKILL.md 的 frontmatter：支持 name / description 的标量与 >- 折叠写法。"""
+    m = re.match(r"^---\n(.*?)\n---\n(.*)$", text, re.S)
+    if not m:
+        return {}, text
+    lines, meta, i = m.group(1).splitlines(), {}, 0
+    while i < len(lines):
+        mm = re.match(r"^([A-Za-z][\w-]*):\s*(.*)$", lines[i])
+        if not mm:
+            i += 1
+            continue
+        key, val = mm.group(1), mm.group(2).strip()
+        if val in (">-", ">", "|-", "|"):
+            buf = []
+            i += 1
+            while i < len(lines) and (not lines[i].strip() or lines[i][:1] in (" ", "\t")):
+                if lines[i].strip():
+                    buf.append(lines[i].strip())
+                i += 1
+            meta[key] = " ".join(buf)
+            continue
+        meta[key] = val.strip('"').strip("'")
+        i += 1
+    return meta, m.group(2)
+
+
+def collect_toolpacks():
+    """工具包货架：包定义 + 被哪些 agent 使用 + 引用错误。"""
+    path = AGENTS_DIR / "toolpacks.json"
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    packs, errors = _read_packs()
+    used = {}
+    for a in _raw_agent_files():
+        for t in a["meta"].get("tools", []):
+            used.setdefault(t, []).append({"target": a["target"], "layer": a["meta"].get("layer", ""),
+                                           "name": a["meta"].get("name", "")})
+    items = [{"name": name, "what": pk.get("what", ""),
+              "commands": list(pk.get("commands") or []), "ref": pk.get("ref", ""),
+              "used_by": used.get(name, [])}
+             for name, pk in packs.items()]
+    return {"packs": items, "errors": errors, "sha": _sha(text)}
+
+
+def _clean_pack(data):
+    out = {"what": str(data.get("what", "") or "").strip()}
+    if data.get("commands"):
+        out["commands"] = [str(x) for x in data.get("commands") or []]
+    if data.get("ref"):
+        out["ref"] = str(data.get("ref")).strip()
+    return out
+
+
+def save_toolpack(name, data, by, base_sha=""):
+    by = (by or "").strip()
+    name = (name or "").strip()
+    if not by:
+        raise SystemExit("错误：保存工具包要记名——请先填操作人")
+    if not re.match(r"^[a-z][a-z0-9:_-]*$", name):
+        raise SystemExit(f"错误：工具包名 {name!r} 不合法（小写字母开头，只含小写字母/数字/:/_/-）")
+    path = AGENTS_DIR / "toolpacks.json"
+    cur = path.read_text(encoding="utf-8")
+    if base_sha and _sha(cur) != base_sha:
+        raise SystemExit("错误：工具包清单已被别人改过（指纹不一致）。刷新后再改")
+    raw = json.loads(cur)
+    packs = dict(raw.get("packs") or {})
+    packs[name] = _clean_pack(data)
+    errs = _toolpack_set_errors(packs)
+    if errs:
+        raise SystemExit("错误：工具包没通过校验，未写盘：\n  " + "\n  ".join(errs))
+    raw["packs"] = packs
+    new = _json_text(raw)
+    if new == cur:
+        return {"changed": False, "sha": _sha(cur), "snapshot": None,
+                "projection": {"ok": True, "written": 0, "drift": []}, "errors": []}
+    _ensure_snapshot("toolpacks", "toolpacks", cur, by)
+    _save_text_atomic(path, new)
+    add, dele = _diff_lines(cur, new)
+    entry = _record_version("toolpacks", "toolpacks", new, by, "保存", add, dele, _sha(cur))
+    projection = _reproject_hosts()
+    return {"changed": True, "sha": _sha(new), "snapshot": entry,
+            "projection": projection, "errors": []}
+
+
+def delete_toolpack(name, by, base_sha=""):
+    by = (by or "").strip()
+    name = (name or "").strip()
+    if not by:
+        raise SystemExit("错误：删除工具包要记名——请先填操作人")
+    path = AGENTS_DIR / "toolpacks.json"
+    cur = path.read_text(encoding="utf-8")
+    if base_sha and _sha(cur) != base_sha:
+        raise SystemExit("错误：工具包清单已被别人改过（指纹不一致）。刷新后再改")
+    raw = json.loads(cur)
+    packs = dict(raw.get("packs") or {})
+    if name not in packs:
+        raise SystemExit(f"错误：没有工具包 {name!r}")
+    refs = [f"{a['target']}（{a['meta'].get('name', '')}）" for a in _raw_agent_files()
+            if name in a["meta"].get("tools", [])]
+    if refs:
+        raise SystemExit(f"错误：{name} 仍被这些 agent 使用，不能删：{'、'.join(refs)}"
+                         "——先在定义里去掉它")
+    del packs[name]
+    raw["packs"] = packs
+    new = _json_text(raw)
+    _ensure_snapshot("toolpacks", "toolpacks", cur, by)
+    _save_text_atomic(path, new)
+    add, dele = _diff_lines(cur, new)
+    entry = _record_version("toolpacks", "toolpacks", new, by, "保存", add, dele, _sha(cur))
+    projection = _reproject_hosts()
+    return {"changed": True, "sha": _sha(new), "snapshot": entry,
+            "projection": projection, "errors": []}
+
+
+def collect_flow_templates(w=None):
+    """编排配置读模型：模板、原始节点、被哪些任务使用、可选组件清单。"""
+    lb = _load_layer_bus()
+    path = lb.TEMPLATES_PATH
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    try:
+        data = lb.load_templates()
+    except Exception as e:  # noqa: BLE001
+        return {"templates": [], "default": "", "sha": _sha(text), "components": [],
+                "errors": [f"流程模板数据读取失败：{e}"]}
+    used = {}
+    if w is not None:
+        for t in w.tasks().values():
+            if t.get("archived"):
+                continue  # 归档任务不在界面呈现，不算「在用」
+            tids = {t.get("flow_template")} | {it.get("flow_template") for it in t.get("iterations", [])}
+            for tid in tids:
+                if tid:
+                    used.setdefault(tid, set()).add(t["task_id"])
+    templates, errors = [], []
+    for tid, tpl in data["templates"].items():
+        errors += lb.validate_template(tid, tpl)
+        ids = sorted(used.get(tid, set()))
+        templates.append({
+            "id": tid,
+            "label": tpl.get("label", tid),
+            "description": tpl.get("description", ""),
+            "nodes": [dict(nd) for nd in (tpl.get("nodes") or [])],
+            "gate_overrides": dict(tpl.get("gate_overrides") or {}),
+            "used_by": {"tasks": len(ids), "task_ids": ids},
+        })
+    components = [{
+        "id": cid, "name": c.get("name", ""), "input_types": list(c.get("input_types") or []),
+        "output_type": c.get("output_type", ""), "human_weight": c.get("human_weight", ""),
+        "requires_test_evidence": bool(c.get("requires_test_evidence")),
+    } for cid, c in lb.LAYER_COMPONENTS.items()]
+    return {"templates": templates, "default": data.get("default", ""), "sha": _sha(text),
+            "components": components, "errors": errors}
+
+
+def _save_templates_raw(raw, cur, by, note="保存"):
+    new = _json_text(raw)
+    if new == cur:
+        return None
+    _ensure_snapshot("templates", "flow_templates", cur, by)
+    _save_text_atomic(_load_layer_bus().TEMPLATES_PATH, new)
+    add, dele = _diff_lines(cur, new)
+    return _record_version("templates", "flow_templates", new, by, note, add, dele, _sha(cur))
+
+
+def save_flow_template(tid, tpl, by, base_sha="", create=False):
+    by = (by or "").strip()
+    tid = (tid or "").strip()
+    if not by:
+        raise SystemExit("错误：保存模板要记名——请先填操作人")
+    lb = _load_layer_bus()
+    path = lb.TEMPLATES_PATH
+    cur = path.read_text(encoding="utf-8")
+    if base_sha and _sha(cur) != base_sha:
+        raise SystemExit("错误：模板数据已被别人改过（指纹不一致）。刷新后再改")
+    raw = json.loads(cur)
+    templates = dict(raw.get("templates") or {})
+    if create and tid in templates:
+        raise SystemExit(f"错误：模板 {tid!r} 已存在")
+    if not create and tid not in templates:
+        raise SystemExit(f"错误：没有模板 {tid!r}")
+    errs = lb.validate_template(tid, tpl)
+    if errs:
+        raise SystemExit("错误：模板没通过校验，未写盘：\n  " + "\n  ".join(errs))
+    templates[tid] = {
+        "label": tpl.get("label", ""), "description": tpl.get("description", ""),
+        "nodes": [dict(nd) for nd in (tpl.get("nodes") or [])],
+        "gate_overrides": dict(tpl.get("gate_overrides") or {}),
+    }
+    raw["templates"] = templates
+    entry = _save_templates_raw(raw, cur, by)
+    if entry is None:
+        return {"changed": False, "sha": _sha(cur), "snapshot": None}
+    return {"changed": True, "sha": _sha(_json_text(raw)), "snapshot": entry}
+
+
+def duplicate_flow_template(from_id, new_id, label, by, base_sha=""):
+    from_id, new_id = (from_id or "").strip(), (new_id or "").strip()
+    lb = _load_layer_bus()
+    path = lb.TEMPLATES_PATH
+    cur = path.read_text(encoding="utf-8")
+    if base_sha and _sha(cur) != base_sha:
+        raise SystemExit("错误：模板数据已被别人改过（指纹不一致）。刷新后再改")
+    raw = json.loads(cur)
+    templates = dict(raw.get("templates") or {})
+    if from_id not in templates:
+        raise SystemExit(f"错误：没有模板 {from_id!r} 可复制")
+    if new_id in templates:
+        raise SystemExit(f"错误：模板 {new_id!r} 已存在")
+    copy = json.loads(json.dumps(templates[from_id], ensure_ascii=False))
+    if label:
+        copy["label"] = label
+    errs = lb.validate_template(new_id, copy)
+    if errs:
+        raise SystemExit("错误：复制出的模板没通过校验：\n  " + "\n  ".join(errs))
+    templates[new_id] = copy
+    raw["templates"] = templates
+    entry = _save_templates_raw(raw, cur, by)
+    return {"changed": entry is not None, "sha": _sha(_json_text(raw)), "snapshot": entry}
+
+
+def restore_config_version(kind, target, sha, by):
+    """回滚到某个历史版本。先校验恢复后的内容，再快照当前、写回、记一条「回滚自」。"""
+    by = (by or "").strip()
+    if not by:
+        raise SystemExit("错误：回滚要记名——请先填操作人")
+    version = read_version(kind, target, sha)
+    old = version["text"]
+    path = _config_path(kind, target)
+    cur = path.read_text(encoding="utf-8")
+    if kind == "agent":
+        meta, body = _parse_agent_frontmatter(old)
+        errs = validate_agent_draft(target, meta, body)
+    elif kind == "toolpacks":
+        try:
+            packs = (json.loads(old).get("packs") or {})
+        except Exception as e:  # noqa: BLE001
+            raise SystemExit(f"错误：这个历史版本不是合法 JSON：{e}")
+        errs = _toolpack_set_errors(packs)
+    else:
+        try:
+            raw = json.loads(old)
+        except Exception as e:  # noqa: BLE001
+            raise SystemExit(f"错误：这个历史版本不是合法 JSON：{e}")
+        lb = _load_layer_bus()
+        errs = []
+        for tid, tpl in (raw.get("templates") or {}).items():
+            errs += lb.validate_template(tid, tpl)
+    if errs:
+        raise SystemExit("错误：这个历史版本不能恢复（会破坏当前配置）：\n  " + "\n  ".join(errs))
+    _ensure_snapshot(kind, target, cur, by)
+    _save_text_atomic(path, old)
+    add, dele = _diff_lines(cur, old)
+    entry = _record_version(kind, target, old, by, f"回滚自 {sha[:12]}", add, dele, _sha(cur))
+    projection = _reproject_hosts() if kind in ("agent", "toolpacks") else None
+    return {"changed": True, "sha": _sha(old), "snapshot": entry, "projection": projection}
 
 
 def _n(v):
@@ -1421,6 +2088,80 @@ def iface_drifted(env):
     旧包没有这个指纹，行为不变。"""
     sha = (env.get("validation") or {}).get("interface_sha")
     return bool(sha) and sha != interface_hash(env)
+
+
+def ensure_signoff_pending(w, pkg, by=""):
+    """高权重层核对后只差人签字时，按本层**已产出的结果**生成一条待签事项。
+
+    人的决定发生在结果之后：开工前不知道 agent 会产出什么，所以平台不在开工前要求人提决定。
+    这里只做两件事：把本层接口卡摘要成一句话待签标题，挂在本包上；人再批准/驳回。
+
+    关键约束：待签事项绑定生成时的接口卡指纹。内容改过之后旧待签必须失效，不能拿旧待签去
+    批准新内容；这里会自动生成当前内容的待签，并用 supersedes 边把旧待签移出队列。
+    已有当前内容的待签就返回它；已有有效签字、或已被驳回（要先重做）就不生成。"""
+    try:
+        _, env = w.resolve_pkg(pkg)
+    except SystemExit:
+        return None
+    layer = env["identity"]["layer_id"]
+    if layer not in HIGH_HUMAN:
+        return None
+    decs = w.decisions()
+    cur_sha = interface_hash(env)
+    pending, valid = [], None
+    for did in env.get("decision_refs", []):
+        d = decs.get(did)
+        if not d:
+            continue
+        if d.get("decision_type") == "reject" and d.get("reviewer") not in (None, "", "pending-user"):
+            return None  # 已被人驳回：先重做，不再生成签字项
+        if d.get("reviewer") == "pending-user":
+            pending.append(d)
+            continue
+        if d.get("decision_type") in APPROVING_TYPES:
+            if not d.get("content_sha") or d.get("content_sha") == cur_sha:
+                valid = valid or d  # 已有对当前内容的有效签字
+    if valid:
+        # 有效签字已经覆盖当前内容：把遗留的旧待签移出队列，避免人点一个必然失败的“批准”。
+        for d in pending:
+            w.add_edge_safe(valid["decision_id"], d["decision_id"], "supersedes",
+                            note="已有当前内容的签字，旧待签作废", agent=by or "平台运行时")
+        return None
+    fresh = next((d for d in pending
+                  if not d.get("content_sha") or d.get("content_sha") == cur_sha), None)
+    if fresh:
+        for d in pending:
+            if d is not fresh:
+                w.add_edge_safe(fresh["decision_id"], d["decision_id"], "supersedes",
+                                note="内容变更，旧待签作废", agent=by or "平台运行时")
+        return fresh["decision_id"]
+    iface = env.get("interface") or {}
+    gives = iface.get("gives") or []
+    first = next((str(g.get("text", "")).strip() for g in gives if g.get("text")), "")
+    question = str(iface.get("question") or env["identity"].get("title", "")).strip()
+    summary = f"确认{layer} {LAYER_GUIDE[layer]['name']}：{first or question}"[:DECISION_SUMMARY_MAX]
+    evidence = [str(e) for g in gives for e in (g.get("evidence") or []) if e]
+    task, _ = w.iteration_of(env)
+    rec = w.add_decision(
+        "ratify",
+        "平台根据本层已产出的结果生成待签事项：本层核对只差人签字。"
+        "请先看卡片里的接口卡与核对结果，再批准或驳回。",
+        "high", "pending-user", summary=summary, evidence_refs=evidence,
+        scope=pkg, agent=by or "平台运行时",
+        task_id=task["task_id"] if task else "", content_sha=cur_sha)
+
+    def _m(e):
+        e.setdefault("decision_refs", [])
+        if rec["decision_id"] not in e["decision_refs"]:
+            e["decision_refs"].append(rec["decision_id"])
+    env_path, _ = w.resolve_pkg(pkg)
+    w.update_envelope(env_path, _m, agent=by or "平台运行时")
+    w.add_edge_safe(pkg, rec["decision_id"], "decided_by", note="signoff",
+                    agent=by or "平台运行时")
+    for d in pending:
+        w.add_edge_safe(rec["decision_id"], d["decision_id"], "supersedes",
+                        note="内容变更，旧待签作废", agent=by or "平台运行时")
+    return rec["decision_id"]
 
 
 def _iface_give(text, truth, evidence, source, frame=None):
@@ -1711,6 +2452,7 @@ def _evidence_lines(w, env, iface):
     tests, runs, results, arts = w.tests(), w.runs(), w.results(), w.artifacts()
     v = env.get("validation", {})
     out = []
+    run_artifacts = {}
     for rid in v.get("test_result_refs", []):
         res = results.get(rid)
         if not res:
@@ -1718,6 +2460,10 @@ def _evidence_lines(w, env, iface):
             continue
         run = runs.get(res.get("run_ref"), {})
         td = tests.get(run.get("test_ref"), {})
+        for key in ("raw_result_artifact", "log_artifact"):
+            aid = run.get(key)
+            if aid:
+                run_artifacts.setdefault(aid, []).append(rid)
         out.append({"id": rid, "kind": "test", "title": td.get("title") or td.get("test_id") or run.get("run_id", rid),
                     "proposition": _s(td.get("proposition"), 100), "verdict": res.get("verdict"),
                     "strength": STRENGTH_LABEL.get(td.get("strength", "V1"), td.get("strength", "")),
@@ -1725,13 +2471,259 @@ def _evidence_lines(w, env, iface):
                     "log": run.get("log_artifact", ""), "raw": run.get("raw_result_artifact", ""),
                     "for_statement": [g.get("id") for g in iface.get("gives", []) if rid in (g.get("evidence") or [])]})
     cited = {x for g in iface.get("gives", []) for x in (g.get("evidence") or []) if str(x).startswith("ART-")}
+    seen_arts = set()
     for a in env.get("artifacts", []):
         rec = arts.get(a.get("artifact_id"), {})
+        seen_arts.add(a.get("artifact_id"))
         out.append({"id": a.get("artifact_id"), "kind": "artifact", "title": rec.get("note") or a.get("artifact_type", ""),
                     "artifact_type": a.get("artifact_type", ""), "hash": (a.get("content_hash") or "")[:12],
                     "path": rec.get("relpath") or rec.get("store_path") or rec.get("uri", ""),
-                    "cited": a.get("artifact_id") in cited})
+                    "cited": (a.get("artifact_id") in cited or a.get("artifact_id") in run_artifacts
+                              or a.get("role") == "layer-report"),
+                    "for_test": sorted(set(run_artifacts.get(a.get("artifact_id"), [])))})
+    # 接口卡直接引用的工件，即使没有挂进 envelope.artifacts，也要能在卡片/交付/证据里看到；
+    # 否则会出现“gate 认它已登记，界面却说不在登记册”的矛盾。
+    for aid in sorted(cited - seen_arts):
+        rec = arts.get(aid)
+        if not rec:
+            continue
+        out.append({"id": aid, "kind": "artifact", "title": rec.get("note") or rec.get("artifact_type", ""),
+                    "artifact_type": rec.get("artifact_type", ""), "hash": (rec.get("content_hash") or "")[:12],
+                    "path": rec.get("relpath") or rec.get("store_path") or rec.get("uri", ""),
+                    "cited": True, "for_test": sorted(set(run_artifacts.get(aid, [])))})
     return out
+
+
+def _l2_report_markdown(w, env):
+    """把 L2 的 payload/接口卡/证据收成一份人读的归因报告（确定性生成，不调用模型）。"""
+    ident = env["identity"]
+    task, it = w.iteration_of(env)
+    goal = ((task or {}).get("goal") or {}).get("statement", "")
+    p = env.get("payload") or {}
+    iface = env.get("interface") or {}
+    card = layer_card(w, env)
+    prop = p.get("proposition") or {}
+    lines = [
+        f"# L2 归因报告：{ident.get('title', '')}",
+        "",
+        f"- 层包：`{ident.get('package_id')}`",
+        f"- 所属：{(task or {}).get('task_id', '—')} / {(it or {}).get('iteration_id', '—')}",
+        f"- 状态：{card['state']['word']}（{card['state']['why']}）",
+        f"- 核对：{card['state']['verdict']}；签字：{'已签' if any(not r['pending'] and not r['stale'] for r in card['receipts']) else '待签'}",
+        f"- 任务目标（原话）：{goal or '—'}",
+        "",
+        "## 这一层回答的问题",
+        str(iface.get("question") or card["guide"].get("question") or "—"),
+        "",
+        "## 可证伪命题",
+    ]
+    for key, label in (("statement", "命题"), ("predicted_direction", "预期方向"),
+                       ("failure_condition", "失败条件"), ("validity_scope", "有效范围")):
+        lines.append(f"- **{label}**：{prop.get(key) or '—'}")
+    lines += ["", "## 受控实验矩阵"]
+    exps = p.get("experiment_matrix") or []
+    if isinstance(exps, dict):
+        exps = exps.get("points") or [exps]
+    if isinstance(exps, list) and exps:
+        for i, x in enumerate(exps, 1):
+            if isinstance(x, dict):
+                title = x.get("exp") or x.get("id") or x.get("point") or f"实验 {i}"
+                detail = x.get("config") or x.get("knobs") or x.get("design") or ""
+                lines.append(f"### {title}")
+                lines.append(str(detail) if detail else "（无配置描述）")
+                for k, v in x.items():
+                    if k not in ("exp", "id", "point", "config", "knobs", "design"):
+                        lines.append(f"- {k}: {v}")
+                lines.append("")
+            else:
+                lines.append(f"- {x}")
+    else:
+        lines.append("（未写实验矩阵）")
+    lines += ["", "## 替代解释"]
+    alts = p.get("alternative_explanations") or []
+    if isinstance(alts, dict):
+        alts = alts.get("items") or [alts]
+    if isinstance(alts, list) and alts:
+        for x in alts:
+            if isinstance(x, dict):
+                lines.append(f"- {x.get('text') or x.get('statement') or x.get('explanation') or x}")
+                if x.get("status"):
+                    lines.append(f"  - 状态：{x['status']}")
+            else:
+                lines.append(f"- {x}")
+    else:
+        lines.append("（未写替代解释）")
+    lines += ["", "## 归因结论",
+              f"- **verdict**：{p.get('attribution_verdict') or '—'}",
+              f"- **root cause**：{p.get('root_cause') or '—'}"]
+    if p.get("l3_handover"):
+        lines.append(f"- **给 L3 的交接**：{p['l3_handover']}")
+    lines += ["", "## 交给下游的结论"]
+    ev = {e["id"]: e for e in card.get("evidence", [])}
+    for g in iface.get("gives") or []:
+        lines.append(f"### {g.get('id')}【{g.get('kind') or TRUTH_LABEL.get(g.get('truth'), g.get('truth'))}】")
+        lines.append(str(g.get("text") or ""))
+        if g.get("evidence"):
+            lines.append("- 依据：" + "、".join(str(x) for x in g["evidence"]))
+        lines.append("")
+    lines += ["## 测试与证据"]
+    tests = [e for e in card.get("evidence", []) if e.get("kind") == "test"]
+    seen_tests = set()
+    for t in tests:
+        key = (t.get("title"), t.get("verdict"))
+        if key in seen_tests:
+            continue
+        seen_tests.add(key)
+        lines.append(f"- {t.get('id')} {t.get('title')}：{t.get('verdict')}（{t.get('strength') or '—'}）"
+                     + (f"；运行证据 {t.get('raw')}" if t.get("raw") else ""))
+    if not tests:
+        lines.append("（还没有登记测试）")
+    lines += ["", "## 适用边界"]
+    for x in iface.get("limits") or []:
+        lines.append(f"- {x}")
+    if not iface.get("limits"):
+        lines.append("（未写适用边界）")
+    lines += ["", "## 留给下一层/人的问题"]
+    for x in iface.get("open") or []:
+        lines.append(f"- [{'人' if x.get('ask') == 'human' else '下一层'}] {x.get('question')}")
+    if not iface.get("open"):
+        lines.append("（无）")
+    lines += ["", "## 登记文件"]
+    for a in env.get("artifacts") or []:
+        if a.get("role") == "layer-report":
+            continue
+        lines.append(f"- `{a.get('uri') or a.get('artifact_id')}`（{a.get('artifact_type')}，{a.get('artifact_id')}）")
+    if not env.get("artifacts"):
+        lines.append("（无）")
+    lines += ["", "---", "本报告由平台根据本包 payload、接口卡与登记证据确定性生成；"
+              "内容以包内原始记录为准。"]
+    return "\n".join(lines) + "\n"
+
+
+def _l3_report_markdown(w, env):
+    """把 L3 的候选方案/判据/接口卡收成一份人读方案报告（确定性生成）。"""
+    ident = env["identity"]
+    task, it = w.iteration_of(env)
+    goal = ((task or {}).get("goal") or {}).get("statement", "")
+    p = env.get("payload") or {}
+    iface = env.get("interface") or {}
+    card = layer_card(w, env)
+    lines = [
+        f"# L3 方案报告：{ident.get('title', '')}",
+        "",
+        f"- 层包：`{ident.get('package_id')}`",
+        f"- 所属：{(task or {}).get('task_id', '—')} / {(it or {}).get('iteration_id', '—')}",
+        f"- 状态：{card['state']['word']}（{card['state']['why']}）",
+        f"- 核对：{card['state']['verdict']}；签字：{'已签' if any(not r['pending'] and not r['stale'] for r in card['receipts']) else '待签'}",
+        f"- 任务目标（原话）：{goal or '—'}",
+        "",
+        "## 这一层回答的问题",
+        str(iface.get("question") or card["guide"].get("question") or "—"),
+        "",
+        "## 候选方案",
+    ]
+    cands = p.get("candidates") or []
+    if isinstance(cands, list) and cands:
+        for c in cands:
+            if not isinstance(c, dict):
+                lines.append(f"- {c}")
+                continue
+            lines.append(f"### {c.get('candidate_id') or '候选方案'}")
+            for key, label in (("targets_bottleneck", "针对瓶颈"), ("expected_mechanism", "预期机制"),
+                               ("change_location", "改动位置"), ("mechanism_parameters", "机制参数"),
+                               ("parameters", "参数")):
+                if c.get(key):
+                    lines.append(f"- **{label}**：{c[key]}")
+            for k, v in c.items():
+                if k not in ("candidate_id", "targets_bottleneck", "expected_mechanism",
+                             "change_location", "mechanism_parameters", "parameters"):
+                    lines.append(f"- {k}: {v}")
+            lines.append("")
+    else:
+        lines.append("（未写候选方案）")
+    ac = p.get("acceptance_criteria") or {}
+    lines += ["## 验收判据"]
+    br = ac.get("bottleneck_resolution") if isinstance(ac, dict) else None
+    if isinstance(br, dict) and br:
+        for k, v in br.items():
+            if isinstance(v, dict):
+                lines.append(f"- **{k}**：{v.get('criterion') or v.get('text') or '—'}"
+                             + (f"（基架 {v.get('frame')}）" if v.get("frame") else "")
+                             + (f"；状态 {v.get('status')}" if v.get("status") else ""))
+            else:
+                lines.append(f"- **{k}**：{v}")
+    else:
+        lines.append("（未写 bottleneck_resolution 主判据）")
+    frames = ac.get("measurement_frames") if isinstance(ac, dict) else None
+    if isinstance(frames, dict) and frames:
+        lines.append("")
+        lines.append("### 测量基架")
+        for k, v in frames.items():
+            if isinstance(v, dict):
+                lines.append(f"- {k}: {v.get('frame') or '—'}（{v.get('source') or '—'}）")
+            else:
+                lines.append(f"- {k}: {v}")
+    if isinstance(ac, dict) and ac.get("explicitly_excluded"):
+        lines += ["", f"**明确排除**：{ac['explicitly_excluded']}"]
+    sp = p.get("selection_proposal")
+    if sp:
+        lines += ["", "## 选择建议", str(sp)]
+    lines += ["", "## 交给下游的结论"]
+    for g in iface.get("gives") or []:
+        lines.append(f"### {g.get('id')}【{g.get('kind') or TRUTH_LABEL.get(g.get('truth'), g.get('truth'))}】")
+        lines.append(str(g.get("text") or ""))
+        if g.get("evidence"):
+            lines.append("- 依据：" + "、".join(str(x) for x in g["evidence"]))
+        lines.append("")
+    lines += ["## 适用边界"]
+    for x in iface.get("limits") or []:
+        lines.append(f"- {x}")
+    if not iface.get("limits"):
+        lines.append("（未写适用边界）")
+    lines += ["", "## 留给下一层/人的问题"]
+    for x in iface.get("open") or []:
+        lines.append(f"- [{'人' if x.get('ask') == 'human' else '下一层'}] {x.get('question')}")
+    if not iface.get("open"):
+        lines.append("（无）")
+    lines += ["", "## 登记文件"]
+    for a in env.get("artifacts") or []:
+        if a.get("role") == "layer-report":
+            continue
+        lines.append(f"- `{a.get('uri') or a.get('artifact_id')}`（{a.get('artifact_type')}，{a.get('artifact_id')}）")
+    if not env.get("artifacts"):
+        lines.append("（无）")
+    lines += ["", "---", "本报告由平台根据本包 payload、接口卡与登记证据确定性生成；"
+              "内容以包内原始记录为准。"]
+    return "\n".join(lines) + "\n"
+
+
+def ensure_layer_report(w, ref, by=""):
+    """生成/更新 L2 归因报告或 L3 方案报告，登记成 report 工件并挂进本包。"""
+    env_path, env = w.resolve_pkg(ref)
+    layer = env["identity"]["layer_id"]
+    pkg = env["identity"]["package_id"]
+    if layer == "L2":
+        filename, label, builder = "L2-attribution-report.md", "人读归因报告", _l2_report_markdown
+    elif layer == "L3":
+        filename, label, builder = "L3-solution-report.md", "人读方案报告", _l3_report_markdown
+    else:
+        raise SystemExit("错误：目前只为 L2/L3 生成人读报告")
+    dest = Path(w.root) / "designs" / pkg / filename
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    text = builder(w, env)
+    dest.write_text(text, encoding="utf-8")
+    art = w.register_artifact(str(dest), artifact_type="report",
+                              note=f"{pkg} {label}", role="layer-report",
+                              agent=by or "平台")
+    def _mutate(e):
+        arts = e.setdefault("artifacts", [])
+        arts[:] = [a for a in arts if a.get("role") != "layer-report"]
+        arts.append({"artifact_id": art["artifact_id"], "artifact_type": "report",
+                     "content_hash": art.get("content_hash", ""),
+                     "uri": art.get("relpath", ""), "role": "layer-report"})
+    w.update_envelope(env_path, _mutate, agent=by or "平台")
+    return {"package_id": pkg, "artifact_id": art["artifact_id"],
+            "path": art.get("relpath", ""), "bytes": len(text.encode("utf-8"))}
 
 
 STATE_ORDER = ["已作废", "有问题", "待人决定", "未验证", "已验证", "进行中", "未开始"]
@@ -1815,7 +2807,7 @@ def template_nodes(w, task, it):
     """一轮迭代的模板节点（流程编排里的「框」），按模板顺序：
     [{layer, name, alias, own: [信封], reused: [信封]}]。同一层在模板里出现多次（批量标定的逐例修复）只算一个框。"""
     env_layers = w.iteration_layers(task, it)
-    tpl = it.get("flow_template") or task.get("flow_template") or DEFAULT_TEMPLATE
+    tpl = it.get("flow_template") or task.get("flow_template") or default_template()
     try:
         tnodes = _load_layer_bus().expand_template(tpl)["nodes"]
     except Exception:  # noqa: BLE001
@@ -2525,6 +3517,61 @@ def cmd_new_pkg(w, args):
         print(f"  归属迭代：{iteration_id}")
     print(f"  下一步：编辑 envelope（payload/artifacts/…）→ wf register-artifact → wf gate {pkg_id}")
     return {"package_id": pkg_id, "iteration_id": iteration_id, "task_id": task_id}
+
+
+def redo_layer(w, pkg, by=""):
+    """把一个已作废/被取代的层包重做成同层的新包（旧包留在 store 里作审计）。
+    新包继承任务/迭代、设计意图与约束、上游引用；payload/证据/决定从头开始。"""
+    old_path, old = w.resolve_pkg(pkg)
+    status = (old.get("lifecycle") or {}).get("status")
+    if status not in BAD_LIFECYCLE:
+        raise SystemExit("错误：只有已作废/被取代的层包可以重做")
+    task, it = w.iteration_of(old)
+    if not task or not it:
+        raise SystemExit("错误：这个包没有归到任务/迭代，不能按流程重做")
+    if task.get("archived"):
+        raise SystemExit(f"错误：{task['task_id']} 已归档，不能重做")
+    if task.get("status") not in TASK_LIVE or it.get("status") not in TASK_LIVE:
+        raise SystemExit("错误：这一轮已结束，不能重做本层；请新开一轮迭代")
+    replaced = (old.get("lifecycle") or {}).get("replaced_by")
+    if replaced:
+        cur = next((e for _, e in w.find_packages()
+                    if e["identity"]["package_id"] == replaced), None)
+        if cur and (cur.get("lifecycle") or {}).get("status") not in BAD_LIFECYCLE:
+            raise SystemExit(f"错误：本包已经重做过，活的新包是 {replaced}")
+    layer = old["identity"]["layer_id"]
+    ns = task.get("namespace") or DEFAULT_NAMESPACE
+    n = 1
+    while True:
+        slug = f"i{it.get('seq', 1)}-{layer.lower()}-r{n}"
+        new_id = f"PKG-{layer}-{ns}-{slug}"
+        if not (w.domains / ns / LAYER_DIR[layer] / new_id).exists():
+            break
+        n += 1
+    res = cmd_new_pkg(w, argparse.Namespace(
+        domain=ns, layer=layer, slug=slug,
+        title=f"{old['identity'].get('title') or pkg}（重做）",
+        owner=by or "", intent=(old.get("design_spec") or {}).get("intent", ""),
+        iteration=it["iteration_id"]))
+    new_path, new = w.resolve_pkg(res["package_id"])
+    old_ds = old.get("design_spec") or {}
+
+    def _new(e):
+        e["design_spec"]["assumptions"] = list(old_ds.get("assumptions") or [])
+        e["design_spec"]["constraints"] = list(old_ds.get("constraints") or [])
+        e["provenance"]["redo_of"] = pkg
+        e["identity"]["component_id"] = old["identity"].get("component_id")
+        e["identity"]["component_alias"] = old["identity"].get("component_alias")
+    w.update_envelope(new_path, _new, agent=by)
+
+    def _old(e):
+        e.setdefault("lifecycle", {})["replaced_by"] = res["package_id"]
+        e["lifecycle"]["replaced_at"] = now()
+    w.update_envelope(old_path, _old, agent=by)
+    w.add_edge_safe(res["package_id"], pkg, "derived_from", note="redo", agent=by)
+    print(f"已重做：{pkg} → {res['package_id']}（旧包保留作审计）")
+    return {"package_id": res["package_id"], "redo_of": pkg,
+            "iteration_id": it["iteration_id"], "task_id": task["task_id"]}
 
 
 def cmd_register_artifact(w, args):
@@ -3268,7 +4315,7 @@ def cmd_state_export(w, args):
                     e["lifecycle"]["status"] == "passed" for e in own))
             # 模板节点（流程编排里的「框」）按模板顺序排列：每个框列出本轮自有的包或沿用的包。
             # 本轮完成 = 每个框都已验证——完成与否只由模板决定，没有另写的成功判据
-            tpl = it.get("flow_template") or t.get("flow_template") or DEFAULT_TEMPLATE
+            tpl = it.get("flow_template") or t.get("flow_template") or default_template()
             nodes = []
             for nd in template_nodes(w, t, it):
                 own_p = [e["identity"]["package_id"] for e in nd["own"]]
@@ -3297,7 +4344,7 @@ def cmd_state_export(w, args):
         task_views.append({
             "task_id": t["task_id"], "title": t.get("title", ""),
             "flow_template": t.get("flow_template") or (its[-1].get("flow_template") if its else ""),
-            "template_label": TEMPLATE_LABEL.get(t.get("flow_template") or (its[-1].get("flow_template") if its else ""), ""),
+            "template_label": template_label(t.get("flow_template") or (its[-1].get("flow_template") if its else "")),
             "status": t.get("status", "draft"),
             "goal": t.get("goal", {}), "benchmarks": t.get("benchmarks", []),
             "charter_decision_id": t.get("charter_decision_id", ""),
@@ -3734,7 +4781,6 @@ def cmd_vcheck(w, args):
 # ---------------------------------------------------------------- v2 层总线：按模板建层包
 
 DEFAULT_NAMESPACE = "general"        # 新任务的层包统一放在这里（用户不可见）；旧任务的层包留在原领域目录
-DEFAULT_TEMPLATE = "microarch_optimize"
 
 
 def _ensure_namespace(w, namespace):
@@ -3971,9 +5017,10 @@ def cmd_task_new(w, args):
     statement = (args.goal or "").strip()
     if not title or not statement:
         raise SystemExit("错误：--title 与 --goal 不能为空")
-    template = args.template or DEFAULT_TEMPLATE
-    if template not in FLOW_TEMPLATES:
-        raise SystemExit(f"错误：未知模板（可选：{', '.join(FLOW_TEMPLATES)}）")
+    template = args.template or default_template()
+    if template not in template_ids():
+        raise SystemExit(f"错误：未知模板（可选：{', '.join(template_ids())}）")
+    layered = is_layered_template(template)
     benchmarks = _resolve_benchmarks(w, args.benchmark)
     if not benchmarks:
         raise SystemExit("错误：至少给一个 --benchmark（先 wf bench-import 导入）")
@@ -4002,7 +5049,7 @@ def cmd_task_new(w, args):
         "charter_decision_id": "", "iterations": [],
         "created_at": ts, "created_by": who, "updated_at": ts, "note": args.note or "",
     }
-    if template != "benchmark_only":
+    if layered:
         task["iterations"].append({
             "iteration_id": f"ITER-{slug}-1", "seq": 1, "label": "迭代 1",
             "status": status, "title": "迭代 1", "reason": "首轮", "started_at": ts,
@@ -4019,7 +5066,7 @@ def cmd_task_new(w, args):
     task["charter_decision_id"] = rec["decision_id"]
     w.add_edge_safe(task_id, rec["decision_id"], "decided_by", note="charter", agent=args.agent)
     created = []
-    if args.create and template != "benchmark_only":
+    if args.create and layered:
         created = _create_mission_packages(
             w, DEFAULT_NAMESPACE, template, intent=statement, owner=args.owner,
             iteration_id=task["iterations"][0]["iteration_id"], task_id=task_id,
@@ -4034,7 +5081,7 @@ def cmd_task_new(w, args):
         print(f"  章程决策：{rec['decision_id']}（待批：wf approve {rec['decision_id']} --as <署名>）")
     if created:
         print(f"  已生成迭代 1 的 {len(created)} 个层包；下一步：wf next --iteration {task['iterations'][0]['iteration_id']}")
-    elif template == "benchmark_only":
+    elif not layered:
         print("  该模板不走层：没有层包；记下 benchmark 的结果后由人封板（wf task-seal）")
     elif task["iterations"]:
         print("  迭代 1 尚无层包：用 wf new-pkg --iteration " + task["iterations"][0]["iteration_id"]
@@ -4068,6 +5115,129 @@ def cmd_task_archive(w, args):
           + "。store 里的层包与决策保留，wf task-show / wf card 仍可查。")
 
 
+def _write_jsonl_atomic(path, rows):
+    path = Path(path)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
+
+
+def purge_task(w, task_id, by=""):
+    """彻底删除一个已归档任务：任务记录、它的层包目录、附属决定/测试/运行/结果/图边。
+    只允许删已归档任务；有其它任务引用它的层包/决定时拒绝。工件对象保留在内容寻址库里
+    （可能被别的任务共用）；被删任务的记录先写到 .zcode/backups 下的一份清单里，便于知道删了什么。"""
+    task = w.find_task(task_id)
+    tid = task["task_id"]
+    if not task.get("archived"):
+        raise SystemExit(f"错误：{tid} 还没归档；先归档再删除（防止误删进行中的任务）")
+    tasks = w.tasks()
+    it_ids = {it.get("iteration_id") for it in task.get("iterations", [])}
+    all_pkgs = list(w.find_packages())
+    deleted = []
+    for p, e in all_pkgs:
+        prov = e.get("provenance") or {}
+        owner, _ = w.iteration_of(e, tasks)
+        if (prov.get("task_id") == tid or prov.get("iteration_id") in it_ids
+                or (owner and owner.get("task_id") == tid)):
+            deleted.append((p, e))
+    pkg_ids = {e["identity"]["package_id"] for _, e in deleted}
+    if not pkg_ids and not task.get("iterations"):
+        # 仍然删任务记录；没有层包是合法的
+        pass
+    for p, e in all_pkgs:
+        if e["identity"]["package_id"] in pkg_ids:
+            continue
+        refs = set((e.get("provenance") or {}).get("parent_package_refs") or [])
+        if refs & pkg_ids:
+            raise SystemExit(f"错误：{e['identity']['package_id']} 仍引用本任务的层包，不能删除")
+    tests = [t for t in w.tests().values() if t.get("package_ref") in pkg_ids]
+    test_ids = {t["test_id"] for t in tests}
+    runs = [r for r in w.runs().values()
+            if r.get("package_ref") in pkg_ids or r.get("test_ref") in test_ids]
+    run_ids = {r["run_id"] for r in runs}
+    results = [r for r in w.results().values() if r.get("run_ref") in run_ids]
+    result_ids = {r["result_id"] for r in results}
+    dec_ids = set(filter(None, [task.get("charter_decision_id")]))
+    dec_ids.update(it.get("entry_decision_id") for it in task.get("iterations", []))
+    dec_ids.discard(None)
+    for d in w.decisions().values():
+        if d.get("task_id") == tid or d.get("scope") in pkg_ids:
+            dec_ids.add(d["decision_id"])
+    for _, e in deleted:
+        dec_ids.update(e.get("decision_refs") or [])
+    # 仍被别的包/任务引用的决定不能删
+    keep_dec = set()
+    for p, e in all_pkgs:
+        if e["identity"]["package_id"] not in pkg_ids:
+            keep_dec.update(e.get("decision_refs") or [])
+    for t in tasks.values():
+        if t["task_id"] == tid:
+            continue
+        keep_dec.add(t.get("charter_decision_id"))
+        keep_dec.update(it.get("entry_decision_id") for it in t.get("iterations", []))
+    keep_dec.discard(None)
+    dec_ids -= keep_dec
+    # 任务目录内的工件登记：只删登记项，对象保留（内容寻址，可能被别的任务共用）
+    pkg_dirs = [p.parent.relative_to(w.root).as_posix() for p, _ in deleted]
+    artifacts = [a for a in w.artifacts().values()
+                 if any(str(a.get("relpath", "")).startswith(d + "/") for d in pkg_dirs)]
+    art_ids = {a["artifact_id"] for a in artifacts}
+    keep_art = set()
+    for p, e in all_pkgs:
+        if e["identity"]["package_id"] in pkg_ids:
+            continue
+        for a in e.get("artifacts") or []:
+            if isinstance(a, dict) and a.get("artifact_id"):
+                keep_art.add(a["artifact_id"])
+    for t in w.tests().values():
+        if t["test_id"] not in test_ids and t.get("baseline_ref"):
+            keep_art.add(t["baseline_ref"])
+    for r in w.runs().values():
+        if r["run_id"] not in run_ids and r.get("raw_result_artifact"):
+            keep_art.add(r["raw_result_artifact"])
+    art_ids -= keep_art
+    removed_ids = pkg_ids | dec_ids | test_ids | run_ids | result_ids
+    graph_removed = removed_ids | {tid}
+    edges = [e for e in w.graph()
+             if e.get("from") in graph_removed or e.get("to") in graph_removed]
+    # 备份被删记录（不复制大数据对象；层包目录清单也写进去）
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup = w.root / ".zcode" / "backups" / f"task-delete-{tid}-{ts}"
+    backup.mkdir(parents=True, exist_ok=True)
+    save_json(backup / "task.json", task)
+    save_json(backup / "removed-records.json", {
+        "task_id": tid, "by": by, "at": now(), "package_dirs": pkg_dirs,
+        "decisions": list(dec_ids), "tests": list(test_ids), "runs": list(run_ids),
+        "results": list(result_ids), "artifacts": list(art_ids),
+        "graph_edges": edges,
+    })
+    # 删层包目录
+    for p, _ in deleted:
+        shutil.rmtree(p.parent, ignore_errors=False)
+    # 重写索引
+    keep_rows = lambda rows, idkey, rm: [r for r in rows if r.get(idkey) not in rm]  # noqa: E731
+    _write_jsonl_atomic(w.idx_decisions, keep_rows(load_jsonl(w.idx_decisions), "decision_id", dec_ids))
+    _write_jsonl_atomic(w.idx_tests, keep_rows(load_jsonl(w.idx_tests), "test_id", test_ids))
+    _write_jsonl_atomic(w.idx_runs, keep_rows(load_jsonl(w.idx_runs), "run_id", run_ids))
+    _write_jsonl_atomic(w.idx_results, keep_rows(load_jsonl(w.idx_results), "result_id", result_ids))
+    _write_jsonl_atomic(w.idx_artifacts, keep_rows(load_jsonl(w.idx_artifacts), "artifact_id", art_ids))
+    _write_jsonl_atomic(w.graph_path, [e for e in w.graph()
+                                       if e.get("from") not in graph_removed
+                                       and e.get("to") not in graph_removed])
+    (w.tasks_dir / f"{tid}.json").unlink(missing_ok=True)
+    print(f"已删除任务：{tid}（层包 {len(pkg_ids)}、决定 {len(dec_ids)}、测试 {len(test_ids)}、"
+          f"运行 {len(run_ids)}、结果 {len(result_ids)}、图边 {len(edges)}）；备份清单：{backup}")
+    return {"task_id": tid, "packages": len(pkg_ids), "decisions": len(dec_ids),
+            "tests": len(test_ids), "runs": len(run_ids), "results": len(result_ids),
+            "graph_edges": len(edges), "backup": str(backup)}
+
+
+def cmd_task_delete(w, args):
+    return purge_task(w, args.task, getattr(args, "agent", ""))
+
+
 def cmd_iter_new(w, args):
     """开下一轮迭代。理由必填：每次 L8 后的 Mission Review 才决定要不要再迭代。"""
     task = w.find_task(args.task)
@@ -4079,8 +5249,10 @@ def cmd_iter_new(w, args):
     reason = (args.reason or "").strip()
     if not reason:
         raise SystemExit("错误：开下一轮必须用 --reason 写明理由（上一轮的结论 / Mission Review 的结论）")
-    template = args.template or task.get("flow_template") or DEFAULT_TEMPLATE
-    if template == "benchmark_only":
+    template = args.template or task.get("flow_template") or default_template()
+    if template not in template_ids():
+        raise SystemExit(f"错误：未知模板（可选：{', '.join(template_ids())}）")
+    if not is_layered_template(template):
         raise SystemExit("错误：该任务的模板不走层，没有下一轮；要再跑一轮请新建任务")
     its = sorted(task.get("iterations", []), key=lambda i: i.get("seq", 0))
     running = [it for it in its if it.get("status") in TASK_LIVE]
@@ -4551,7 +5723,7 @@ def build_parser():
     s.set_defaults(fn=cmd_brief)
 
     s = sub.add_parser("new-mission", help="按场景模板建层包（层总线 v2）。新任务请用 task-new")
-    s.add_argument("--template", required=True, choices=list(FLOW_TEMPLATES))
+    s.add_argument("--template", required=True, choices=template_ids())
     s.add_argument("--domain", default="", help="层包存放位置（一般不用给；默认位置对用户不可见）")
     s.add_argument("--cases", type=int, default=1, help="批量模式的案例数")
     s.add_argument("--owner", default="")
@@ -4574,7 +5746,7 @@ def build_parser():
     s.add_argument("--goal", required=True, help="目标原话（不变量，原样显示在每一层）")
     s.add_argument("--benchmark", action="append", default=[],
                    help="全局清单里的 benchmark 名或已登记的 ART- id（可多条）")
-    s.add_argument("--template", default=DEFAULT_TEMPLATE, choices=list(FLOW_TEMPLATES),
+    s.add_argument("--template", default=default_template(), choices=template_ids(),
                    help="流程模板：任务长什么样只由它决定")
     s.add_argument("--create", action="store_true", help="按模板生成本迭代的层包")
     s.add_argument("--owner", default="")
@@ -4587,7 +5759,7 @@ def build_parser():
     s.add_argument("--task", required=True)
     s.add_argument("--reason", required=True, help="上一轮 L8 / Mission Review 的结论")
     s.add_argument("--title", default="")
-    s.add_argument("--template", default="", choices=[""] + list(FLOW_TEMPLATES))
+    s.add_argument("--template", default="", choices=[""] + template_ids())
     s.add_argument("--create", action="store_true", help="按模板生成本迭代的层包")
     s.add_argument("--owner", default="")
     s.add_argument("--as", dest="as", default="", help="开迭代决策的署名；不给则待批")

@@ -25,6 +25,7 @@
 /sim_build/
 
 # ---- 构建产物与缓存 ----
+.venv-runtime/
 node_modules/
 __pycache__/
 *.py[cod]
@@ -35,6 +36,8 @@ __pycache__/
 # ---- 本机运行时状态 ----
 # 界面写操作的幂等键记录（本机使用痕迹）
 /platform/viz/idempotency.jsonl
+# 平台运行时：作业日志与模型配置（可能含 api_key）
+/platform/runtime/
 *.log
 
 # ---- 会话备份与计划（.zcode/agents/ 是生成物，进库）----

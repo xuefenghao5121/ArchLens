@@ -724,3 +724,544 @@ wf run-log --pkg <包> --agent <谁> [--model 名] [--duration 秒]   # 记一�
 - **按层选模型没接**：宿主支持 `model` 与 `thoughtLevel`，但方案第 5 条假设把这一项留到以后。
 - **工具边界只是「声明 + 尽力拦截」加宿主 tools 限制**，不是硬隔离。
 - 旧包没有开工简报、回读记录与执行记录，界面如实显示「还没有留档」。
+
+## 13. Agent 管理、技能与工具货架、编排配置（zcode-glm，2026-11-25）
+
+### 13.1 目标与四项决定
+
+【配置】用户要求：左侧有 Agent 管理，能进入每一层（含调度 agent）维护 `agent.md`，配置多种 skills 与 tools；
+skills 与 tools 要有货架界面，能打开看定义；最后支持完备的编排配置。四项选择：
+
+1. `agent.md` 编辑用「表单 + 正文，保存前校验」；
+2. 改动留痕用「版本快照 + 历史（对比、回滚）」，不引入 Champion / Challenger；
+3. 技能只读（可打开、介绍、看被谁使用），工具包可新建与编辑；
+4. 流程模板从代码搬到数据文件，界面新建 / 编辑 / 复制，任务创建时选模板。
+
+### 13.2 数据与文件
+
+【实测】新增 `platform/agents/flow_templates.json`：`default` + `templates{id: {label, description, nodes, gate_overrides}}`。
+七个模板原样迁移；`nodes` 的顺序就是流程顺序，**edges 由顺序推导**（相邻节点相连；`repeat: per_case` 展开成
+`case_1..N` 并扇出 / 扇入），`gate_overrides` 按展开后的别名映射——顺手修掉了旧代码里 `case_N` 覆盖对不上
+`case_1` 的问题。新增 `platform/schemas/flow_template.json`（registry 1.0）。
+
+【实测】版本快照存 `platform/agents/.versions/`：`index.jsonl`（追加式） + `objects/<sha256>.<md|json>`（内容寻址）。
+每条记 `at / by / kind / target / sha / bytes / lines / add / del / prev_sha / note`。保存前先给当前内容补一条
+「保存前快照」，写入后记本次「保存」；回滚前再快照当前，回滚记录写「回滚自 <sha>」。agent / 工具包 / 模板共用。
+
+【实测】写回 `agent.md` 时沿用原文件的「frontmatter 后是否有空行」与结尾空行习惯，避免只改一个字段却把整份
+文件格式重排（历史 diff 只出现真正改的那一行）。
+
+### 13.3 引擎（`wf.py` / `layer_bus.py` / `bind_hosts.py`）
+
+【实测】`layer_bus.py` 删除静态 `SCENARIO_TEMPLATES`，改为按 mtime 读数据；新增 `template_ids / default_template /
+template_label / validate_template`。`wf.py` 的 `_load_layer_bus()` 也按 mtime 缓存模块——否则每次调用都重执行，
+数据缓存无效。模块级 `FLOW_TEMPLATES / TEMPLATE_LABEL` 删除，改函数；`cmd_task_new` / `cmd_iter_new` 把字面量
+`"benchmark_only"` 换成「模板没有框」判断（`is_layered_template`），新模板只要没有框，行为与仅 benchmark 一致。
+
+【实测】配置读写函数：`collect_agent_config / collect_skills / collect_toolpacks / collect_flow_templates` 都返回
+`{items, errors, sha}`，**坏文件不抛异常**——定义写坏时配置页仍能打开去修。保存函数：`save_agent_definition /
+save_toolpack / delete_toolpack / save_flow_template / duplicate_flow_template / restore_config_version`；共同规则：
+记名、`base_sha` 防并发覆盖、写前整组校验、写前快照、写后重投影。`bind_hosts.project_agents(check=False)` 改为
+可直接调用并返回 `{written, drift}`；agent 改 `host_name` 时删掉旧投影，避免留下孤儿文件。
+
+【实测】校验规则：目录与 `layer` 一致；`role` 与 `LAYER_AGENT` 一致；`host_name` 合法且不与其他 agent 重复；
+skills 在磁盘存在；tools 在工具包清单；正文非空；writes / must_not 非空。工具包被任何 agent 引用时不能删；
+模板校验组件、别名唯一、`per_case` 至多一个、门禁字段是字符串列表。
+
+### 13.4 服务端
+
+【实测】新增只读端点：
+
+- `GET /api/agents` → 九份定义（含正文、当前文件 `sha`）+ 整组校验错误；
+- `GET /api/skills` → 四个 skill 的用途、正文、是否 GENERATED、方法论源、被哪些 agent 使用；
+- `GET /api/tools` → 八个工具包 + 使用关系 + 清单文件 `sha`；
+- `GET /api/config/history?kind=&target=[&sha=]` → 历史列表 / 单版本原文；
+- `GET /api/templates` 扩展：保留 `layers`（TaskForm 与回归依赖），新增原始 `nodes`、`gate_overrides`、`used_by`、
+  `components`、文件 `sha`。`used_by` 只数未归档任务。
+
+【实测】`HANDLERS` 新增七个动作：`agent_save`、`agent_restore`、`toolpack_save`、`toolpack_delete`、
+`template_save`、`template_duplicate`、`reproject_hosts`；动作总数 19 → 26。所有写动作要求 `agent` 记名；
+`agent_save / toolpack_save / template_save / agent_restore` 用 `base_sha` 拒绝覆盖别人的改动（配置文件不在
+`store_env_hash` 覆盖范围内，`target_version` 对它们无效，所以另加内容指纹）。
+
+### 13.5 界面
+
+【实测】侧栏新增三个入口（总 7 个）：`/agents` Agent 管理、`/shelf` 技能与工具、`/templates` 编排配置。
+新增 `frontend/src/features/config/`：`AgentsPage`（九张卡）、`AgentDetail`（表单 + 正文 + 右侧历史）、
+`HistoryPanel`（查看 / LCS 行对比 / 回滚）、`ShelfPage`（skills / 工具包两个 tab）、`TemplatesPage`
+（模板卡片与节点编辑器）、`config.css`。表单复用任务模态与通用按钮样式；写动作复用 `useAction` / `useOperator` /
+`ActionNotice`。TaskForm 不变，模板下拉从 `/api/templates` 自动看到新模板。
+
+【实测】保存流程是「确认 → 写盘」：点「保存并重投影」先校验本地字段，再弹确认框，明确写出这次会做三件事
+（写回 agent.md、留快照、更新 .zcode/agents 兼容投影），并说明平台读取的是 `platform/agents` 原文件、按 mtime
+重新加载，保存后下一次派发就使用新定义——**不需要新开对话，也不经过 ZCode 界面**。顶部原「重投影宿主定义」
+改为「仅重投影」，只给手动改过文件、没走保存的情况用；宿主投影只是外部宿主兼容副本，平台内部派发不依赖它。
+
+### 13.6 验证
+
+【实测】回归 216 条全过（原 193 + R18 新增 23）：九份定义、四个技能、八个工具包、模板端点带组件与指纹；
+保存 agent 后投影与 `/api/guide` 立刻更新、历史两条且指纹对得上；旧 `base_sha` / 非法工具包 / 不记名都被拒且
+不写盘；回滚恢复文件与投影；工具包新建 / 编辑 / 被引用拒删 / 未引用可删；新模板可建任务（迭代正好 L1→L8 两个框）、
+改 label 立刻反映到任务、可复制、非法组件被拒；`skill_save` 是未知动作。
+
+【实测】`wf selftest` 15/15；`cli_smoke.sh` 全过（含仅 benchmark 模板不开迭代）；`bind_hosts --check` 九份无漂移；
+前端临时 tsconfig `tsc --noEmit` 零错误。
+
+【实测】整仓副本浏览器实测（`AGENTS_DIR` 由脚本位置推出、不认 `WF_ROOT`，所以必须整仓复制）：Agent 列表 → L5
+详情 → 改名字保存（新指纹、+1/−1 行、重投影 9 份）→ 历史出现「保存前快照」与「保存」→ 对比当前显示 name 行
+增删 → 回滚恢复旧名字与旧指纹 → 技能详情显示方法论源、工具包与只读提示 → 新建 `ui:probe` 工具包 → 新建
+`ui_probe` 模板 → 任务表单下拉出现「浏览器探针流程」。测后真实 `platform/agents/` 与 `.zcode/agents/` 指纹未变，
+真实 store 未写。
+
+### 13.7 边界与遗留
+
+- 不新建 / 删除 agent：仍是每层一个 + 调度一个，共九份。
+- 技能只读；改内容要改 `platform/methodology/*.md` 再重跑 `bind_hosts.py`，否则投影会覆盖。
+- 模板不指定「换哪个 agent」：框按层绑定该层的 `agent.md`；一层多候选 agent 需要先扩展加载器与派工，本轮不做。
+- 工具包与模板也有快照历史，但界面暂只提供 agent 的回滚入口（工具包删除、模板 id 不可改已足够防止误操作）。
+- 定义保存后平台读取即生效（按文件 mtime）。平台内部运行时见 §14：`runtime.py` 读定义、调模型、执行工具、
+  跑 `wf gate`，不需要「新开对话 + 粘贴开场白」。当前一个作业只跑一层并可选自动推下一层；遇到待人决定就停。
+- 配置写是「单线程服务 + base_sha 乐观并发」，不是硬锁；两个浏览器同时保存时后一个会被拒并提示刷新。
+
+## 14. 平台内部运行时：层 agent 不再交给外部对话（zcode-glm，2026-11-26）
+
+### 14.1 为什么
+
+【配置】用户纠正了上一版的设计：通用微架构混合仿真工作流应在平台内自动串联（提交 L1 → 调 L1 的 agent 开工），
+不应把用户送到 ZCode 界面做交付，更不该用「新开会话 + 开场白」刷新 `agent.md`。所以运行时的归属必须是平台：
+定义由平台读，模型由平台调，工具由平台执行，核对由平台做；界面只出现平台的派发与日志。
+
+### 14.2 结构
+
+【实测】新增 `platform/tools/runtime.py`（只依赖标准库）：
+
+- **定义**：每次派发读 `platform/agents/<层>/agent.md`（`wf.agent_of`），把正文、skills 正文、工具包命令、
+  writes / must_not、任务目标、`wf brief` 简报拼成系统提示。没有「开场白」这一步。
+- **模型**：OpenAI 兼容 `POST <base_url>/chat/completions`，带 function calling 工具：
+  `bash` / `read_file` / `write_file` / `list_dir` / `finish`。模型与密钥来自
+  `platform/runtime/config.json`（0600，不进库）或环境变量 `RUNTIME_BASE_URL / RUNTIME_MODEL / RUNTIME_API_KEY`。
+- **工具执行**：bash 在仓库根目录、`WF_ROOT` 指向当前 store、`WF_ACTOR=layer:<层>`（层 agent 不能替人签字）；
+  读写文件限制在仓库内；输出截断；命令超时；作业可请求停止。
+- **核对**：agent 调 `finish` 或给出最终文本后，平台自己跑 `wf gate <包>`，把 verdict / 报告写进作业；
+  通过后写 `wf run-log`。agent 自报完成不算。
+- **串联**：`auto=true` 时，核对通过后找模板里的下一个框；只有该框已有自有层包才继续派，遇到待人决定 /
+  核对未过 / 没有下一个包就停。同一时刻只允许一个作业（store 是追加式，没有并发锁）。
+- **作业**：`platform/runtime/jobs/<JOB>.json` + `.jsonl` 日志；状态
+  queued / running / passed / needs_decision / gate_failed / error / stopped / max_turns。
+
+### 14.3 服务端与界面
+
+【实测】端点：`GET /api/runtime`（配置是否齐全 + 正在跑的作业 + 最近作业）、`GET /api/jobs`、
+`GET /api/job/<job_id>`（含最近 300 条日志）。动作：`dispatch {pkg, auto?}`、`stop_job {job}`、
+`runtime_config {base_url, model, api_key?, api_key_env?, max_turns?}`；动作总数 26 → 29。
+
+界面：Agent 管理页顶部是「运行时」配置（未配置时展开表单）；层详情页有「平台内部运行」：一个开关
+「核对通过后自动派下一个有包的框（遇到待人决定就停）」、派发按钮、停止按钮、状态与最近 16 条日志。
+没有跳转 ZCode 的链接或提示词。
+
+【实测】人的决定发生在结果之后：开工前不知道 agent 会产出什么，所以平台不要求人提前提决定。运行时在
+`wf gate` 返回 `needs_decision`（只差签字）时，用本层已产出的接口卡自动生成一条待签事项（`ratify`，
+标题是「确认 Lx 层名：第一条 gives 或本层问题」），挂在本包回执上；人直接在「人的决定」里批准/驳回。
+手动流程不再在 `validate` 里偷偷建决定；层详情页的按钮改为「补记决定」，本层「未开始」时禁用，打开时
+用本层接口卡预填一句话，用于把已经发生、已经产出的选择补成记录。
+
+### 14.4 验证
+
+【实测】回归 225 条全过（原 216 + R19 9 条）：用本机假 OpenAI 接口，派发一个 L1 包后作业日志里依次出现
+`tool_call → tool_result → finish → gate`，工具输出 `regress-ok` 可见，作业状态来自平台核对，作业 JSON/JSONL
+落盘，运行时配置可保存且不回显密钥；对一个只差签字的高权重层，运行时自动生成待签事项并挂在本层回执上。
+另用 `runtime.py run` 做过同样的假模型端到端（bash → finish → gate）。前端 `tsc --noEmit` 零错误。
+
+### 14.5 模型步预算、强制收工与后台可见性（补充，2026-11-26）
+
+【实测】真实作业日志暴露了两个问题：模型在 40 步模型调用里反复读代码、没有调用 finish，最终 `max_turns` 且
+没有总结；用户切出流程编排后，后台线程其实还在跑（日志连续 127.7s），但页面丢了 `jobId`，看起来像停了。
+
+**术语**：平台“迭代”指一条任务下的 L1–L8 一轮（`ITER-…`）；一次派发是一个“作业”；作业内部的每次模型调用
+是一“步”（可能带多个工具调用）。作业里的 40 步不是 40 次迭代。
+
+- **预算**：系统提示里写明最多 `max_turns` 步模型调用、目标是本层最小可交付、不要反复读同一文件；剩 5 步时
+  插入一条「停止扩大探索、优先补齐交付并 finish」的提醒。
+- **强制收工**：最后一步只给 `finish` 工具，并设 `tool_choice=finish`；模型必须总结做了什么、改了什么、
+  跑了什么核对、还差什么。预算用尽也会继续跑 `wf gate` 并把 verdict 记进作业，不再停在半路没有结论。
+- **后台**：作业跑在 server 的独立线程里，界面导航不影响；日志逐条写 `platform/runtime/jobs/<JOB>.jsonl`。
+  层详情重新挂载时从 `/api/jobs` 找回这一包最近的作业并接回日志；顶栏在作业运行中显示「作业运行中 · Lx」，
+  点它回到对应层。
+- **边界**：后台线程属于当前 server 进程；重启 server 会中断正在跑的作业，不会自动续跑（作业状态会保持
+  最后一次写入的值）。要跨重启恢复需要另做作业守护/重启恢复，本轮不做。
+- **开工前的核对**：`dispatch` 只检查包存在、未作废、运行时配置齐全、当前没有别的作业；本层交付缺项不在开工前
+  拦——那是 agent 要补的，完整 `wf gate` 放在收工后。只有运行时未配置、包已作废、上游未验证这类前置问题才需要
+  开工前处理。
+
+### 14.6 边界
+
+- **权限是「声明 + 尽力拦截」，不是硬沙箱**：bash 仍能碰仓库内任何文件；`writes / must_not` 是给模型的边界，
+  `WF_ACTOR` 只拦人的签字动作。要硬隔离需要容器/系统账号，本轮不做。
+- **模型必须支持 function calling**；不支持的工具调用协议会直接报错，不静默降级成纯文本。
+- **人工签字层会停**：L1/L2/L3/L4/L6/L8 需要人签，自动串联在这些层核对后停下，等人处理；这是纪律，不是 bug。
+- **一个作业一层（可选自动下一层）**，不是无限跑完整任务；作业失败/停止后从当前包重新派发。
+- 运行时配置与作业日志在本机 `platform/runtime/`，不进公开仓库；密钥不会通过 `/api/runtime` 回显。
+
+## 15. 层详情信息架构：按“少了它会丢什么”砍模块（zcode-glm，2026-11-26）
+
+### 15.1 判断原则
+
+【配置】用户要求逐模块反推价值：少了这个模块，对使用者看到的信息有没有关键影响？没有就删；重复的移到
+单一来源；低价值的一行带过。按这个原则重排后，层详情只保留三栏：目标、交付、证据；核对压成一行；
+人的决定移出页面，只留页头入口。
+
+### 15.2 改了什么
+
+【实测】
+- **目标**：只留任务目标原话和“这一层回答的问题”。角色、skills、tools、writes、must_not、agent 正文删除——
+  这些在 Agent 管理里有单一来源；这里只留一句“在 Agent 管理里维护”的链接，不重复展示。
+- **交付**：
+  - 顶部加“本层交付”（`guide.produces`）与“交付项”（`guide.deliverables`），先回答这一层到底交什么；
+  - 加“交付文件”：登记工件的实际保存路径、类型、哈希；没有路径就如实写“没有记录路径”；
+  - “交给下游的结论”改为以“结论 1 / 结论 2”为主标题，S1/S2 缩成小号等宽编号放在旁边（它只是下游引用 ID，
+    不是内容本身）；
+  - “用了上游的什么”改为“本层依据的上游”：显示上游层 + 具体引用的结论正文；只记了包号没写结论的，
+    明确写“只记了包号，没有写具体用了哪条结论”；
+  - 原来的“还没解决的问题”按 `ask` 拆开：`next` 改成“给下一层的输入（不是遗留问题，下一层要据此工作）”，
+    `human` 单独放在“待人回答”；不再把 L2 的方案输入误标成遗留问题；
+  - `limits` 保留为“适用边界”。
+- **证据**：从“登记在册的测试与工件列表”改成“结论 → 依据”：
+  - 顶部一句 `结论依据：N/M 条有登记依据`；
+  - 没有写依据的结论只汇总一行（`没有写依据：S1、S2、S3`），不再每条重复；
+  - 有依据的结论逐条列出测试通过/未通过、工件路径与哈希；不在登记册的引用直接标红；
+  - 没被任何结论引用的登记物折叠到“未被结论引用的登记物”；其他测试也折叠。这样证据模块只回答
+    “每条结论有据可依吗”，不再堆清单。
+- **核对回执**：从整块五行列表压成一行 `<details>`：`核对：只差签字 · 2/5 项通过 · 上次 …（展开看逐项）`。
+- **人的决定**：不再作为页面中的一栏；页头保留“人的决定（N）”按钮，点开弹窗才能批准/驳回/补记。
+  这样页面主体只呈现这一层的目标、交付与依据，签字仍可完成，但不占信息空间。
+- **平台内部运行**：从带边框的整块面板压成一行操作条（模型 · 自动下一层 · 派发/停止），日志只在有作业时出现。
+- **原始记录**：仍默认折叠，不改。
+
+### 15.3 刻意保留的东西
+
+- **S1/S2 编号保留**：下游接口卡的 `takes` 按这些编号引用本层结论；去掉编号会让下游无法指认“用了哪一条”。
+  所以编号不删，只降为次要信息，正文做主标题。
+- **人的决定保留入口**：签字是平台硬规则，不能因为移出页面就失去入口；弹窗是折中。若要更彻底，可再做
+  一个全局“人的决定”收件箱页面，把这些回执从层详情彻底移走。
+- **交付文件路径按实际登记显示**：没有登记文件就写“还没有登记交付文件”，不编造“归因报告 + summary”。
+
+### 15.4 作废后的页面（补充，2026-11-26）
+
+【实测】用户作废一层后，下游整链会被 `invalidated`；原先层详情仍把旧交付/结论/证据按正常内容展示，看起来像
+“作废了但信息还在”。现在作废/被取代的包（lifecycle=invalidated/superseded 或状态词已作废）：
+
+- 页头只留一句「本包已作废：不再提供核对/签字/派发；作废前的内容只在原始记录里」；
+- 显示一条作废说明（原因与根包），不再渲染交付、证据、核对回执；
+- 目标原话保留（属于任务，不属于死包）；
+- 人的决定、补记决定、作废并重做、简报、留档按钮全部不显示；
+- 「平台内部运行」只显示“本包已作废，不能派发”；
+- 原始记录仍默认折叠保留（payload / 接口卡 / 工件 / 核对报告），审计需要时能查；
+- 运行时与 `dispatch` 也拒绝在作废/被取代的包上开工，防止在死包上继续跑。
+
+回归夹具补充：真实 store 可能已被用户作废一批包；`regress.py` 在**沙箱副本**里按信封 history 的最后一条
+`invalidated` 记录恢复到作废前状态（只动副本，不碰真实 store），并断言作废包不能派发。回归 232/0。
+
+### 15.5 一键重做、证据页与总览的联动（补充，2026-11-26）
+
+【实测】
+- **一键重做**：作废包详情页有「重做本层」。它新建一个同层新包（同一任务/迭代），继承设计意图、约束与上游
+  引用，payload/证据/决定从头开始；旧包不删，`lifecycle.replaced_by` 记新包号。新包是 draft，旧包仍是
+  invalidated，审计可见。
+- **同一层有活包时旧死包不参与呈现**：`iteration_layers` 在“同层已有非 invalidated/superseded 包”时过滤掉
+  死包，所以重做后这一框用新包，不会被旧包拖成「已作废」；死包仍可按包号查。
+- **证据与回溯**：作废包不再展示旧结论/证据，只显示“本包已作废 + 原因 + 查作废包详情”；若同一轮里存在被
+  重做替代的历史包，在该层顶部显示“历史：…（已作废，仅存档）”链接。活的包正常显示结论与依据。
+- **研究总览**：`pending_decisions` 收集时跳过 invalidated/superseded 包，作废包上的待批事项不再出现在
+  「等你决定」，任务卡片的待批数也随之减少；作废包本身仍可用 `wf approve` 直接处理（审计）。
+- **运行时**：作废/被取代的包不能派发（前端不显示按钮，后端 `JobManager.start` 也拒绝）。
+
+### 15.6 验证
+
+【实测】前端 `tsc --noEmit` 零错误；浏览器在 L2 页确认：目标栏不再出现 agent/skills/tools 详情；交付栏有
+交付摘要、文件路径、结论 1/2/3、上游依据、给下一层的输入；证据栏显示 `0/3 条有登记依据` 与未写依据的编号；
+核对是一行；人的决定只在页头按钮与弹窗里；平台内部运行是一行。真实 store 未被写。
+
+## 16. 任务归档、恢复与彻底删除（zcode-glm，2026-11-26）
+
+### 16.1 语义
+
+【配置】用户要求：归档把任务状态冻结、随时激活；删除完全删除、都清空。
+
+- **归档**：任务记录打 `archived`，任务与它的层包从研究总览、流程编排、证据与回溯、待批队列里消失；
+  状态、层包、决定、证据都还在 store 里，随时 `恢复` 回到归档前。归档不改变任务/迭代的 status。
+- **删除**：只允许删**已归档**任务（防止误删进行中的研究）。需要把任务 ID 原样填进确认框；删除任务记录、
+  层包目录、附属决定 / 测试 / 运行 / 结果 / 图边。内容寻址的工件对象保留在 `platform/store/objects/`
+  （可能被别的任务共用）；被删任务的记录另写一份清单到 `.zcode/backups/task-delete-<TASK>-<时间>/`，
+  便于事后知道删了什么（不是可恢复的数据备份）。
+
+### 16.2 入口与接口
+
+【实测】研究总览：
+- 进行中/已结束任务卡上多一个「归档」；弹窗填原因（选填）。
+- 底部「已归档任务（N）」折叠区：恢复 / 删除。
+- 删除弹窗必须输入任务 ID；确认后调用 `task_delete`。
+- 后端新增 `GET /api/archived-tasks`（状态导出不含归档任务，所以单独列摘要）与动作
+  `task_archive {task, reason?, restore?}`、`task_delete {task, confirm}`；动作总数 30 → 32。
+
+### 16.3 删除的边界与拒绝条件
+
+【实测】
+- 只删已归档任务；未归档先归档。
+- 仍有其它任务的层包 `parent_package_refs` 指向被删层包时拒绝（否则别的任务回溯会断）。
+- 仍被其它包/任务引用的决定不删。
+- 工件只删“任务层包目录内”的登记项，且被其它包/测试/运行引用时保留；`objects/` 不物理清理。
+- 删除清单写到 `.zcode/backups`；UI 不提供“回收站恢复”，删除是不可逆操作。
+
+### 16.4 验证
+
+【实测】回归 242/0（R20 6 条）：建临时任务 → 归档 → 已归档清单可见、状态导出消失 → 恢复 → 再归档 →
+确认框填错拒绝 → 正确确认后删除 → 任务与层包目录都不在、状态里没有、删除清单存在。浏览器确认总览的
+归档弹窗、已归档区的删除确认框（输入框提示任务 ID）正常；真实 store 未被回归改动。
+
+## 17. LangGraph 编排骨架 + CHIA 式领域工具：L1 垂直切片（zcode-glm，2026-11-27）
+
+### 17.1 为什么不是“再调一下 prompt”
+
+【实测】v1 在 L1 的真实作业：
+- `JOB-20261126-200454-d227`：40 步模型调用、56 次工具调用、约 8 万字符工具输出、0 条 assistant 正文、
+  没有 finish；模型用通用 bash 读 RTL 仓库/子模块/宏定义，最后 `max_turns`。
+- `JOB-20261127-102406-9e5a`：40 步、178.6s、`gate_failed`；模型甚至改了 `drive.sv` 的枚举名，但 payload/
+  interface/gate 仍未完成。
+
+问题不是模型没有推理，而是工具面给了它一个无限大的仓库和一把 bash。LangGraph 单独也修不了；必须同时换
+工具面与状态契约。
+
+### 17.2 结构
+
+【实测】新增 `platform/tools/runtime_v2.py`（可选依赖 LangGraph）：
+- `StateGraph` 节点：`prepare` → `agent` ⇄ `tools` → `reflect` → `agent` → `finish`；条件边：agent 有
+  tool_calls 去 tools，否则去 finish；tools 执行完先经过 reflect 再回 agent。`reflect` 是不带工具的模型
+  调用，只生成 1–2 句 Thought，写 `thought` 事件；`prepare` 写 `plan` 事件（图 + 检查清单）。
+- Thought 不冒充 assistant 已执行的动作：reflect 的指令只放在临时消息里，回注时标成“系统记录，这不是
+  已执行动作”，否则模型会把“打算调用工具”当成“已经调用”，下一轮直接结束。
+- v1 `JobManager` 仍是作业生命周期、`wf gate`、签字、状态、日志、单作业锁的负责人；v2 只替换 L1 的
+  “这一层 agent 怎么干活”，避免双重门禁。
+- `SqliteSaver` checkpointer 在 `platform/runtime/checkpoints.sqlite`，`thread_id=job_id`；作业 JSON/JSONL
+  契约不变，新增 `engine/node` 字段。
+- 预算：`max_turns` 仍指模型调用步数；剩 5 步提醒；最后一步只给 finish 并强制收工；预算用尽也跑外层 gate。
+- 引擎选择：`RUNTIME_ENGINE` / 运行时配置 `engine`；L1–L8 都走 v2（分层工具面见 §19）。
+- 写入容错：`wf_interface_patch` 接受 `patch` 别名、`limits` 字符串归一为列表；工件类型别名归一为
+  schema enum；`prepare` 从任务目标补齐空 `design_spec.intent`，避免模型被 gate 的脚手架问题卡死。
+
+### 17.3 CHIA 式领域工具（没有 bash）
+
+工具执行节点只暴露：
+- `wf_brief`、`wf_card`、`wf_gate`、`wf_register_artifact`、`wf_payload_patch`、`wf_interface_patch`、
+  `wf_show_for`；`l1_previous`、`benchmark_list`、`case_list`、`case_inspect`、`case_read`、`environment_read`；
+  `finish`。
+- 写入工具做字段/路径校验：L1 payload 只允许 benchmarks / metric_definitions / baseline_refs 等；接口卡按
+  `layer_interface` schema 校验；baseline_refs 必须是已登记 ART，且路径在 missions/benchmarks/domains/designs，
+  不能是 golden / RESULT / case.json / 平台文档。
+- 领域输入红线：`case_inspect` 只读 meta/issue；`case_read` 拒绝 golden、RESULT、case.json、patch；
+  与 `missions/l5calibration/README.md` 的“只给 base_commit + issue 文本，golden patch 仅判分用”一致。
+- 工具结果截断为结构化小块，避免上下文被 8 万字工具输出塞满。
+
+### 17.4 实测对比
+
+【实测】同一真实模型（glm-5.3）：
+- 旧 v1：40 步、56 次工具调用、0 正文、无交付、`max_turns`/`gate_failed`。
+- 新 v2（沙箱副本，真实模型）：8 步，工具为 wf_brief / l1_previous / benchmark_list / case_list /
+  environment_read / case_inspect / case_read / wf_register_artifact / wf_payload_patch / wf_interface_patch /
+  wf_gate / finish；写出真实 benchmark、3 个指标定义、2 个已登记基线工件（drive.sv、base_src_fpnew_cast_multi.sv）
+  与 S1–S4 接口卡；`wf gate` 返回 `needs_decision`、blocks 为空，只差人签字。没有 bash，没有改案例文件。
+- 显式 ReAct 后（沙箱副本，真实模型）：`JOB-20261127-123115-ae6c` 6 步 / 5 条 `thought` / 10 次工具调用 /
+  约 2 分钟；Thought 覆盖“复用失败包基线 → 确认案例 → 写 payload → 写接口卡 → gate 只剩签字 → finish”，
+  gate 仍为 `needs_decision`、blocks 为空。作业面板按“思考（ReAct）→ 行动 → 观察”展示。
+- v2 假模型 HTTP 冒烟：6 步，payload/interface 落盘，gate needs_decision，checkpoint 存在。
+- 旧回归 245/0（`RUNTIME_ENGINE=v1`），真实 store 未被 v2 测试写入。
+
+### 17.5 依赖与启动
+
+- `requirements-runtime.txt`：`langgraph` 1.2.x、`langgraph-checkpoint-sqlite`；不是 wf.py/平台核心依赖。
+- 由于系统 Python 有 PEP 668 限制，v2 用 `.venv-runtime`（带 `--system-site-packages`）：
+  `python3 -m venv --system-site-packages .venv-runtime && .venv-runtime/bin/pip install -r requirements-runtime.txt`；
+  启动 server 用 `.venv-runtime/bin/python platform/viz/server.py --port 8899`。
+- Agent 管理 → 运行时把 engine 切到 `langgraph`；L1–L8 都走 v2（见 §19）。v1 始终可用。
+
+### 17.6 边界与后续
+
+- 这一段当时只做了 L1；L2–L8 的分层工具面见 §19。gate→human→下一层的图边、LangGraph interrupt/resume、重启恢复仍未做。
+- 目前外层 `wf gate` 仍由 v1 执行；v2 图内的 `wf_gate` 只是 agent 自检，避免双重状态处理。
+- 没有引入 Ray/Docker/FastMCP；CHIA 只复用“领域工具 + 程序化边 + 检查点/中断”的思想。
+- 真实 store 的 L1 r1 包已由用户派发产出 payload/接口卡，当前停在等人签 `DEC-20261127-110113-cbd8`；
+  显式 ReAct 的验证在沙箱副本完成，没有替用户签字、没有写真实 store。
+
+## 18. 工作台可读性与工件审阅（zcode-glm，2026-11-27）
+
+### 18.1 作业时间线
+
+层详情不再把作业 JSONL 原样铺开。`JobTimeline` 按 `turn` 分组，把 `thought` / `tool_call` / `tool_result`
+投影成“思考 / 行动 / 观察”；工具名翻成人话，结果只留摘要（登记为 ART、写入哪些字段、核对 verdict），
+原始日志放在 `<details>` 里。顶部“本层结果”显示状态、步数、verdict、finish 摘要，并跳到下方交付。
+默认只显示最近 8 步，避免长作业把页面撑满。
+
+### 18.2 交付文件查看 / 审核 / 编辑
+
+- 打开：`GET /api/artifact?pkg=…&id=ART-…`。只允许本包 artifacts、interface.gives.evidence、payload
+  中引用过的已登记 ART；文本返回完整内容，二进制或超过 512KB 只返回元数据。
+- 编辑：`artifact_save` 不覆盖共享输入。修改写到 `designs/<pkg>/edits/<时间>/<文件名>`，登记为新 ART，
+  本包 envelope 中对旧 ART 的引用（artifacts / interface / payload / evidence）切到新版本；旧文件、
+  旧 ART、旧签字保留。保存后自动重跑 gate，并把直接依赖本包的下游层作废。
+- 边界：编辑不是“静默改证据”。页面明确提示会生成新版本、下游会作废、需要重新核对和签字；共享输入
+  原文件不会被覆盖。二进制/超大文件只能看元数据。
+
+### 18.3 证据因果
+
+接口卡里每个 `S` 的 `evidence` 数组是它自己声明的依据；不同 S 引用不同 ART 是正常的，平台不替 agent
+推断因果，只核对“引用已登记、哈希一致”。证据页现在为每条依据显示“类型 + 文件 + 用途 + 哈希”，
+并把“不同结论为什么挂不同 ART”写成常驻说明；ART 可直接点开审核。
+
+### 18.4 待签事项与内容指纹
+
+待签事项不是“一次批准永久有效”：它绑定生成时的 `interface_hash`。内容改过之后：
+
+- `ensure_signoff_pending` 不返回旧待签，而是按当前内容生成新待签，并用 `supersedes` 边把旧待签移出队列；
+- `approve` 若发现待签指纹与当前接口卡不一致，直接拒绝，提示先“核对”，不再写一条过期批准；
+- 手动“核对”也调用同一逻辑：内容改过则换新待签，已经通过则清掉遗留待签；
+- 前端对过期待签只给“重新核对生成新待签”，不显示“批准”。
+
+这样“批准”永远只对用户当时看到的那份内容生效；旧回执保留作审计，但不会挡住当前内容的新签字。
+
+## 19. L2–L8 接入 LangGraph + 分层领域工具（zcode-glm，2026-11-27）
+
+### 19.1 为什么不是复制八份 L1
+
+L1 的“无 bash”是因为观测层不该读 RTL、改案例；L2/L5/L6/L7 必须跑实验/构建，L4 需要写 contract_manifest。
+所以沿用同一张图，但按层生成工具面：
+
+| 层 | 写入 | 命令 | 额外工具 |
+|---|---|---|---|
+| L1 | 无文件写 | 无 | 案例输入、接口卡、payload 白名单 |
+| L2 | `designs/` | `run_command`（受控） | 测试登记 |
+| L3 | 无 | 无 | 候选方案 payload |
+| L4 | 无 | 无 | `wf_contract_patch` |
+| L5 | `designs/` | `run_command` | 测试登记、RTL/testbench 工件 |
+| L6 | `designs/`、`src/gem5/src/rtl/`、`sim_build/` | `run_command` | 测试登记 |
+| L7 | `designs/`、`sim_build/`、`deliverables/` | `run_command` | 测试登记 |
+| L8 | 无 | 无 | 结论 payload、测试登记 |
+
+所有层共用：`wf_brief`、`wf_previous`、`repo_read/list`（L1 除外）、`wf_register_artifact`、
+`wf_payload_patch`、`wf_interface_patch`、`wf_test_register`、`wf_gate`、`finish`、ReAct reflect。
+`run_command` 仍带策略：拒绝签名/作废/平台配置/store 写入；`WF_ACTOR=layer:<层>` 继续阻止层 agent 替人签字。
+
+### 19.2 领域动作
+
+- `wf_payload_patch`：L1 继续严格白名单；L2–L8 先写、按 `wf.LAYER_RULES` 返回 warnings，最终由 gate 裁决。
+  嵌套对象深合并，列表覆盖。
+- `wf_test_register`：输入测试定义 + 运行证据文件，平台同时登记 TST / RUN / RES，挂到本包 validation；
+  这是 L2/L5/L6/L7/L8 满足“需要 pass 测试”的统一入口。
+- `wf_contract_patch`：只给 L4，写 `contract_manifest`（manifest_id/interfaces/validity_scope），不混进 payload。
+- `case_read` / `repo_read`：支持 offset/limit，并回 `total_lines`；避免模型在长文件上反复盲读。
+- `finish` 前没跑过 `wf_gate` 时，平台自动补跑一次 gate 并把结果写进对话，避免模型反复 finish 空转。
+
+### 19.3 验证
+
+- `runtime_v2_smoke.py`：L1 11 项检查（含“L1 没有通用仓库/命令工具”“有 ReAct thought”“工件可打开/编辑”）。
+- `runtime_v2_layers_smoke.py`：临时副本里逐层派发 L1–L8；每层都 `engine=langgraph`、有 Thought、有 finish；
+  L2/L5/L6/L7 走出 `run_command → repo_write → wf_test_register`，L4 走出 `wf_contract_patch`，L1 没有 repo_read /
+  run_command。gate 是否 pass 不在冒烟范围（真实交付由模型完成）。
+- 真实模型 L2 沙箱（24 步）：最终写出了 payload 与接口卡草稿，但没登记 pass 测试，未达到 pass；过程中暴露过
+  接口卡 `takes` 写成字符串、S 超长，以及模型反复想跳过 gate 直接 finish。已加 `takes` 单上游无歧义归一、
+  接口格式提示、finish 前自动补 gate；真实 L2 再验仍建议观察。
+- 旧回归 245/0（`RUNTIME_ENGINE=v1`），v2 改动不碰 v1 工具循环。
+
+## 20. L2 40 步不出结果的定位：领域 harness 优先（zcode-glm，2026-11-27）
+
+真实 L2 作业 `JOB-20261127-173814-622a`：40 步、43 次工具调用（run_command 15 / repo_read 10 / repo_list 9），
+payload 与接口卡草稿已写出，但 `wf_test_register=0`、ART=0、RES=0，gate 只能 `needs_decision`。
+第 10–39 步主要耗在 `equiv_check.py` 的依赖闭包和 verilator 环境，不是 LangGraph 路由，也不是上下文窗口爆掉
+（工具输出约 56.8k 字符）。
+
+### 20.1 harness 修复
+
+- `--extra-repo` 兼容 `repo:commit` 与 `repo@commit`；
+- cvfpu 的 `src/common_cells` 是 submodule（commit 树只有 gitlink）：自动作为 extra repo，并自动加 include；
+- commit 模式下 include/模块找不到时回退工作树读取，`materialize` 也回退；
+- 修 `commit=None` 崩溃、include root 层级算错导致 `-I` 不命中。
+- 验证：简单命令直接 `EQUIV_PASS`；base 作 candidate 得到 `MISMATCH status_o @10 / EQUIV_FAIL bad=6`。
+
+### 20.2 上下文与停止规则
+
+- 新增 `repo_grep`（正则、path:line），让 agent 定位代码而不是反复整文件读；
+- `_compact_messages`：消息总字符超过 60k 时，把较老工具正文压成 600 字摘要，保留最近 12 条和 tool_call 结构；
+- 提示明确“同一 harness 连续失败 3 次就停，把环境阻塞写进 open/notes，finish”，不把 30 步耗在修环境。
+
+### 20.3 结论
+
+LangGraph 不是这次的原因；它是路由骨架，不负责 harness 和上下文压缩。L2 当前包仍是 `unresolved` 草稿，
+0 RES；harness 已修通，下一步重跑 L2 补 RES 和签字，而不是换架构。
+
+## 21. 跨作业经验：蒸馏上一轮，不恢复旧对话（zcode-glm，2026-11-27）
+
+重新派发不是“接着旧 thread”，而是新 job、新 LangGraph thread。为了让新 agent 少走弯路，平台从同包最近完成的
+作业日志里蒸馏经验，注入新作业的 system prompt：
+
+- 结论摘要、工具使用次数、失败命令（error/非零 exit_code）、关键 Thought 尾部、上一轮 gate 报告、
+  当前包遗留 ART/RES/lifecycle；
+- 最多 2 个作业，文本上限 9000 字，写 `experience_loaded` 事件；
+- `wf_experience` 工具可再读结构化经验；
+- 明确提示旧 harness/命令策略问题可能已被平台修复，先按当前 environment 重试最小命令。
+
+这不等于恢复旧上下文：旧 Thought 不会逐条回放，旧 checkpoint 不会续跑；新作业只是带着“上一轮哪些路走不通、
+哪些结论已确认、哪些工件已留下”起步。真实 L2 40 步作业的摘要/失败/Thought 已能注入到新 job 的 prompt。
+
+## 22. 交付结论按类型归组（zcode-glm，2026-11-27）
+
+层接口卡里的 `gives` 不是一个“总结”，而是给下游的多条独立 claim。L2 典型有四类：根因、单变量干预实测、
+替代解释排除、随机等价回归；每条都要保留 S 编号供下游引用，所以不能为了页面好看强行合并。
+
+展示层改为：
+
+- `gives` 支持可选 `kind`：`root_cause / measurement / exclusion / scope / decision / other`；
+- 交付页先显示总览：`本层共 4 条：根因/机制 1、实测证据 2、排除项 1`；
+- 再按类型折叠：根因组默认展开，其他组可展开；每条仍显示 S 编号、truth、证据和工件；
+- 旧接口卡没写 kind 时按文字推断，保证历史包也能分组；
+- 证据区每条结论也显示类型标签。
+
+这不是“减少结论”，而是把同质展示改成“摘要 + 分类 + 按需展开”。结论数量仍受接口卡上限和 gate 约束。
+
+## 23. L2 交付为什么只有 log（zcode-glm，2026-11-27）
+
+L2 的主交付是 `payload`（命题四件套、实验矩阵、替代解释、归因 verdict）和接口卡，不是文件；`agent.md` 的
+deliverables 也是这些结构化内容。测试运行日志是证据，不是主交付。因此页面只看到两个 log 并不代表层失败，
+而是 agent 只登记了测试证据、没有额外生成报告。
+
+展示与证据链修正：
+
+- 交付区标题改为“登记文件（证据/输入）”，避免把证据文件误当主交付；
+- 测试结果的 `raw_result_artifact` / `log_artifact` 现在算被结论引用，页面显示“支撑测试 RES-…”；
+- `wf_test_register` 自动把运行证据工件挂进包 artifacts，不再要求 agent 额外登记；
+- 若需要人读报告，应由 L2 agent 生成并登记一个 `report` 工件；平台不把 payload 伪装成文件。
+
+## 24. L2 人读归因报告（zcode-glm，2026-11-27）
+
+L2 的结构化交付仍是 payload + 接口卡；另外增加一份确定性生成的人读报告：
+
+- `_l2_report_markdown`：命题四件套、实验矩阵、替代解释、归因 verdict/root cause、S1–S4 及依据、
+  测试列表、适用边界、下一层/人的问题、登记文件；
+- `ensure_layer_report`：写 `designs/<pkg>/L2-attribution-report.md`，登记 report 工件（role=layer-report），
+  替换同角色旧报告并挂进 artifacts；
+- 运行时在 L2 agent 收工后、平台 gate 前自动生成；UI L2 页提供“生成/重新生成归因报告”；
+- 报告是交付物，不是测试证据；测试日志仍由 RES 关联，日志工件不再显示“未被结论引用”；
+- 报告按 title+verdict 去重测试，避免同一测试重复登记导致重复段落。
+
+这使 L2 同时具备“机器可读 payload/接口卡”和“人读报告”，而不是把报告伪装成 log。
+
+## 25. L3 人读方案报告（zcode-glm，2026-11-27）
+
+L3 的主交付是 payload 里的候选方案与验收判据；它不要求测试，也不要求文件，所以“登记文件”为空并不代表没产出。
+为了让 L3 也有一份人读交付，扩大 `ensure_layer_report`：
+
+- L2 生成 `L2-attribution-report.md`；L3 生成 `L3-solution-report.md`；
+- L3 报告内容：候选方案（candidate_id/targets_bottleneck/expected_mechanism/change_location/参数）、
+  BR 判据与 frame、measurement_frames、明确排除、S1–S4、适用边界、下一层/人的问题、登记文件；
+- 运行时在 L3 agent 收工后、平台 gate 前自动生成；L3 页提供“生成/重新生成方案报告”；
+- 报告是 report 工件（role=layer-report），替换旧的同角色报告，挂进本包 artifacts；
+- 报告内容确定性生成，以 payload/接口卡/登记证据为准，不调用额外模型。
+
+L3 的机器可读交付仍是 payload + 接口卡；报告是同一事实的人读视图，不替代接口卡。

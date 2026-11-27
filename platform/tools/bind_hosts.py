@@ -63,12 +63,14 @@ def parse_agent_frontmatter(text):
     return meta, body
 
 
-def project_agents(args, results):
+def project_agents(check=False):
     """platform/agents/<层>/agent.md → .zcode/agents/<host_name>.md。
 
     宿主读 frontmatter 的 name / description / tools / skills；本平台的 writes、must_not
     与工具包写进正文末尾，让被派发的 agent 自己看得到边界。宿主对项目级定义不认
-    permissionMode，所以边界靠 tools 限制加这段声明。"""
+    permissionMode，所以边界靠 tools 限制加这段声明。
+    返回 {"written": 写入份数, "drift": 与源不一致的产物, "checked": 检查份数}。"""
+    results = {"written": 0, "drift": [], "checked": 0}
     packs = {}
     packs_path = AGENTS / "toolpacks.json"
     if packs_path.exists():
@@ -112,12 +114,14 @@ def project_agents(args, results):
         )
         out = ROOT / ".zcode" / "agents" / f"{host}.md"
         out.parent.mkdir(parents=True, exist_ok=True)
-        if args.check:
+        results["checked"] += 1
+        if check:
             if not out.exists() or out.read_text(encoding="utf-8") != content:
                 results["drift"].append(str(out))
         else:
             out.write_text(content, encoding="utf-8")
             results["written"] += 1
+    return results
 
 
 def main():
@@ -163,7 +167,10 @@ def main():
                 results["written"] += 1
 
     if "zcode" in args.hosts:
-        project_agents(args, results)
+        projected = project_agents(args.check)
+        results["written"] += projected["written"]
+        results["checked"] += projected["checked"]
+        results["drift"] += projected["drift"]
 
     print(f"written={results['written']} checked={results['checked']} drift={len(results['drift'])}")
     for d in results["drift"]:

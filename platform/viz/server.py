@@ -21,7 +21,7 @@ target_version（store_env_hash）做乐观并发校验（可选，界面始终�
 用法：
     python3 platform/viz/server.py --port 8899                         # 默认连真实 store
     WF_ROOT=/path/to/sandbox python3 platform/viz/server.py --port 8899  # 连隔离副本
-    浏览器打开 http://127.0.0.1:8899（React 前端经 Vite 把 /api 代理到这里）
+    前端开发：Vite 跑在 5173（/api 代理到 8899）；8899 本身是 API + 仓库静态目录，不是第二个前端。
 
 只读端点（GET）：
     /api/state                           → workflow-state.json（0.4：每个层包带 state 状态词与 card 卡片；
@@ -32,6 +32,7 @@ target_version（store_env_hash）做乐观并发校验（可选，界面始终�
     /api/evo-state                       → 演进状态（含谱系）
     /api/evidence                        → 证据 DAG（兼容保留；界面上的证据页读的是 /api/state 里的卡片）
     /api/benchmarks                      → benchmark 清单（全局一份）
+    /api/artifact?pkg=…&id=ART-…         → 本包引用的工件文本内容（只读；二进制/超大文件只给元数据）
     /api/templates                       → 流程模板：每个模板有哪些框（层）
     /api/guide                           → 每层的固定说明，以及几个标记（实测 / 推断 / 拍定、F0–F3）的人读含义
     /api/package/<package-id>            → 层包详情：卡片 + 原始记录
@@ -39,7 +40,7 @@ target_version（store_env_hash）做乐观并发校验（可选，界面始终�
 写操作端点（POST，application/json）：
     /api/action    body = { action, ..., idempotency_key?, agent?, target_version? }
 
-    十九种动作：
+    动作（常用）：
       inspect  只读（等价 GET /api/package/<pkg>）
       ask      生成工作简报（wf brief：目标原话、本层说明、上游卡片）
       propose  提请决定：写待批事项（reviewer 固定 pending-user；批准只走 approve；须带 summary 一句话结论；
@@ -59,6 +60,9 @@ target_version（store_env_hash）做乐观并发校验（可选，界面始终�
       task_seal    封板（须署名 as 与理由 reason）
       brief_out    开工简报留档：{pkg, by} 写成 <包目录>/brief.md，并把指纹与上游记进信封
       run_log      记一条执行记录：{pkg, agent, model?, duration?, note?}
+      artifact_save  人工编辑工件：{pkg, artifact, content, base_hash, by}。不覆盖共享输入，
+                     写到 designs/<pkg>/edits/… 生成新 ART；本包引用切到新版本，下游直接依赖包作废，
+                     保存后自动重跑 gate。
 """
 import argparse
 import contextlib
@@ -81,6 +85,11 @@ sys.path.insert(0, str(TOOLS))
 IDEM_PATH = ROOT / "idempotency.jsonl"
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 PKG_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+ART_ID_RE = re.compile(r"ART-[A-Za-z0-9._-]+")
+ARTIFACT_TEXT_LIMIT = 512 * 1024
+ARTIFACT_TYPES = {"rtl_source", "kernel", "config", "script", "stats", "log", "report",
+                  "spec_doc", "data", "binary", "manifest", "test_artifact",
+                  "environment", "other"}
 
 
 def _import_wf():
@@ -139,13 +148,13 @@ def evidence(domain=None):
 
 
 def templates():
-    """流程模板：任务长什么样、怎样算完成，只由模板决定。每个模板列出它的框（层）。
-    去重规则与引擎的 template_nodes 一致（L5d 归到 L5；同一层出现多次只算一个框）。"""
+    """流程模板：任务长什么样、怎样算完成，只由模板决定。每个模板列出它的框（层）与原始节点。
+    去重规则与引擎的 template_nodes 一致（L5d 归到 L5；同一层出现多次只算一个框）。
+    模板是数据（platform/agents/flow_templates.json），这里每次按当前文件读。"""
     wfmod, w = _import_wf()
-    bus = wfmod._load_layer_bus()
+    cfg = wfmod.collect_flow_templates(w)
     out = []
-    for tid in wfmod.FLOW_TEMPLATES:
-        tpl = bus.SCENARIO_TEMPLATES[tid]
+    for tpl in cfg["templates"]:
         layers, seen = [], set()
         for nd in tpl["nodes"]:
             L = str(nd.get("component", "")).rstrip("d")
@@ -153,9 +162,85 @@ def templates():
                 seen.add(L)
                 layers.append({"layer": L, "name": wfmod.LAYER_GUIDE[L]["name"],
                                "alias": nd.get("alias", "")})
-        out.append({"id": tid, "label": wfmod.TEMPLATE_LABEL.get(tid, tid),
-                    "description": tpl["description"], "layers": layers})
-    return {"templates": out, "default": wfmod.DEFAULT_TEMPLATE}
+        out.append(dict(tpl, layers=layers))
+    return {"templates": out, "default": cfg["default"] or wfmod.default_template(),
+            "components": cfg["components"], "sha": cfg["sha"], "errors": cfg["errors"]}
+
+
+def agents_config():
+    """Agent 管理页：九份定义（含正文与当前指纹）+ 整组校验错误。
+    不依赖 agent_defs()——定义写坏时页面仍要能打开，否则没法在界面里修。"""
+    wfmod, w = _import_wf()
+    return wfmod.collect_agent_config()
+
+
+def skills_shelf():
+    """技能货架（只读）：用途、正文、方法论源、被哪些 agent 使用。"""
+    wfmod, w = _import_wf()
+    return wfmod.collect_skills()
+
+
+def tools_shelf():
+    """工具包货架：包定义、被哪些 agent 使用、引用错误。"""
+    wfmod, w = _import_wf()
+    return wfmod.collect_toolpacks()
+
+
+def archived_tasks():
+    """已归档任务：状态导出里不包含它们，但总览要能恢复/删除，所以单独列一份摘要。"""
+    wfmod, w = _import_wf()
+    tasks = w.tasks()
+    pkgs = list(w.find_packages())
+    out = []
+    for tid, t in tasks.items():
+        if not t.get("archived"):
+            continue
+        it_ids = {it.get("iteration_id") for it in t.get("iterations", [])}
+        mine = [e for _, e in pkgs
+                if (e.get("provenance") or {}).get("task_id") == tid
+                or (e.get("provenance") or {}).get("iteration_id") in it_ids]
+        out.append({"task_id": tid, "title": t.get("title", ""), "status": t.get("status", ""),
+                    "archived_at": t.get("archived_at", ""),
+                    "archived_reason": t.get("archived_reason", ""),
+                    "iteration_count": len(t.get("iterations", [])),
+                    "package_count": len({e["identity"]["package_id"] for e in mine})})
+    out.sort(key=lambda x: x.get("archived_at", ""), reverse=True)
+    return {"tasks": out}
+
+
+def config_history(kind, target, sha=None):
+    """配置版本历史：不带 sha 列历史与当前指纹；带 sha 取该版本内容。"""
+    wfmod, w = _import_wf()
+    if sha:
+        return wfmod.read_version(kind, target, sha)
+    entries = wfmod.list_versions(kind, target)
+    path = wfmod._config_path(kind, target)
+    cur = path.read_text(encoding="utf-8") if path.exists() else ""
+    return {"kind": kind, "target": target, "entries": entries,
+            "current_sha": wfmod._sha(cur), "current_lines": len(cur.splitlines()),
+            "current_bytes": len(cur.encode("utf-8")), "current": cur}
+
+
+def _runtime():
+    """按需导入平台运行时（它依赖 wf，且只在派发/看作业时才需要）。"""
+    import runtime as runtimemod
+    return runtimemod
+
+
+def runtime_status():
+    return _runtime().runtime_status()
+
+
+def jobs_list():
+    rt = _runtime()
+    return {"active": rt.MANAGER.active, "jobs": rt.list_jobs(20)}
+
+
+def job_detail(job_id):
+    job = _runtime().get_job(job_id, tail=300)
+    if job is None:
+        raise SystemExit(f"找不到作业：{job_id}")
+    return job
 
 
 def guide():
@@ -242,6 +327,203 @@ def package_detail(ref):
     }
 
 
+# ---------------------------------------------------------------- 工件查看 / 编辑
+
+def _pkg_artifact_ids(env):
+    """本包允许在工作台打开的工件：信封 artifacts、接口卡 gives.evidence、payload 里引用的 ART。"""
+    ids = set()
+
+    def walk(v):
+        if isinstance(v, str):
+            if ART_ID_RE.fullmatch(v):
+                ids.add(v)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+
+    for a in env.get("artifacts", []) or []:
+        if isinstance(a, dict) and a.get("artifact_id"):
+            ids.add(str(a["artifact_id"]))
+    walk((env.get("interface") or {}).get("gives") or [])
+    walk(env.get("payload") or {})
+    return ids
+
+
+def _artifact_file(w, rec):
+    """登记记录 → 仓库内可读文件。只接受仓库/商店内的路径，拒绝任意绝对路径。"""
+    root = Path(w.root).resolve()
+    for key in ("relpath", "store_path"):
+        raw = rec.get(key)
+        if not raw:
+            continue
+        p = (root / str(raw)).resolve()
+        if p == root or root not in p.parents:
+            continue
+        if p.is_file():
+            return p
+    raw = rec.get("uri")
+    if raw:
+        p = Path(str(raw)).resolve()
+        if (p == root or root in p.parents) and p.is_file():
+            return p
+    raise SystemExit(f"错误：工件 {rec.get('artifact_id')} 没有可读文件（可能只在对象库里）")
+
+
+def _artifact_ref(w, pkg, aid):
+    env_path, env = _pkg_by_id(w, pkg)
+    if not ART_ID_RE.fullmatch(str(aid or "")):
+        raise SystemExit("错误：artifact 参数须是 ART-… 编号")
+    if aid not in _pkg_artifact_ids(env):
+        raise SystemExit(f"错误：{aid} 不是层包 {pkg} 引用的工件")
+    rec = w.artifacts().get(aid)
+    if not rec:
+        raise SystemExit(f"错误：工件不在登记册：{aid}")
+    return env_path, env, rec
+
+
+def _safe_artifact_type(rec, dest, wfmod):
+    at = str(rec.get("artifact_type") or "")
+    if at in ARTIFACT_TYPES:
+        return at
+    guessed = wfmod._guess_artifact_type(str(dest))
+    return guessed if guessed in ARTIFACT_TYPES else "other"
+
+
+def artifact_read(pkg, aid):
+    """读一个已登记工件的文本内容；二进制/超大文件只返回元数据，不把内容塞进界面。"""
+    _, w = _import_wf()
+    _, _, rec = _artifact_ref(w, pkg, aid)
+    path = _artifact_file(w, rec)
+    raw = path.read_bytes()
+    sha = hashlib.sha256(raw).hexdigest()
+    text = None
+    binary = False
+    truncated = False
+    if len(raw) <= ARTIFACT_TEXT_LIMIT:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            binary = True
+    else:
+        truncated = True
+    stored = rec.get("content_hash") or ""
+    return {
+        "ok": True, "artifact_id": rec.get("artifact_id"), "package_id": pkg,
+        "artifact_type": rec.get("artifact_type", ""), "title": rec.get("note") or rec.get("artifact_type", ""),
+        "path": rec.get("relpath") or rec.get("store_path") or rec.get("uri", ""),
+        "content_hash": sha, "registered_hash": stored, "stale": bool(stored and stored != sha),
+        "size": len(raw), "binary": binary, "truncated": truncated,
+        "editable": not binary and not truncated, "text": text,
+        "source": "共享输入" if not str(rec.get("relpath") or "").startswith("designs/") else "包内文件",
+    }
+
+
+def _replace_art(v, old, new):
+    if isinstance(v, str):
+        return new if v == old else v
+    if isinstance(v, list):
+        return [_replace_art(x, old, new) for x in v]
+    if isinstance(v, dict):
+        return {k: _replace_art(x, old, new) for k, x in v.items()}
+    return v
+
+
+def _direct_downstream(w, pkg):
+    """直接依赖这个包的层包；编辑证据后它们必须作废，不能继续用旧结论。"""
+    kids = set()
+    for e in w.graph():
+        if e.get("edge_type") == "depends_on" and e.get("to") == pkg and e.get("from"):
+            kids.add(str(e["from"]))
+    for _, env in w.find_packages():
+        pid = env["identity"]["package_id"]
+        if pid != pkg and pkg in (env.get("provenance") or {}).get("parent_package_refs", []):
+            kids.add(pid)
+    return sorted(kids)
+
+
+def _h_artifact_save(w, wfmod, p):
+    """人工编辑一个工件：不覆盖共享输入，写到 designs/<pkg>/edits/ 下形成新 ART；
+    当前包内对该 ART 的引用切到新版本，旧工件与旧文件保留。保存后自动重跑 gate。"""
+    pkg = (p.get("pkg") or "").strip()
+    aid = (p.get("artifact") or p.get("artifact_id") or "").strip()
+    content = p.get("content")
+    if not pkg or not aid:
+        raise SystemExit("artifact_save 需要 pkg 与 artifact（ART-…）")
+    if not isinstance(content, str):
+        raise SystemExit("artifact_save 需要 content 字符串")
+    if not content.strip():
+        raise SystemExit("内容为空，拒绝保存")
+    if len(content.encode("utf-8")) > ARTIFACT_TEXT_LIMIT:
+        raise SystemExit(f"内容超过 {ARTIFACT_TEXT_LIMIT // 1024}KB，拒绝保存")
+    by = _require_by(p, "保存工件")
+    env_path, env, rec = _artifact_ref(w, pkg, aid)
+    lc = (env.get("lifecycle") or {}).get("status", "")
+    if lc in ("invalidated", "superseded"):
+        raise SystemExit("层包已作废/被取代，不能编辑工件")
+    path = _artifact_file(w, rec)
+    raw = path.read_bytes()
+    cur_sha = hashlib.sha256(raw).hexdigest()
+    base = str(p.get("base_hash") or rec.get("content_hash") or "")
+    if base and base != cur_sha:
+        raise SystemExit("文件在打开后被外部改动，拒绝覆盖；请刷新后再编辑")
+    if cur_sha == hashlib.sha256(content.encode("utf-8")).hexdigest():
+        return {"changed": False, "artifact_id": aid, "message": "内容没有变化"}
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(rec.get("relpath") or rec.get("uri") or "artifact.txt").name)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    dest_dir = (Path(w.root) / "designs" / pkg / "edits" / stamp).resolve()
+    root = Path(w.root).resolve()
+    if dest_dir != root and root not in dest_dir.parents:
+        raise SystemExit("编辑路径越界")
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / (name or "artifact.txt")
+    dest.write_text(content, encoding="utf-8")
+    art_type = _safe_artifact_type(rec, dest, wfmod)
+    new = w.register_artifact(str(dest), artifact_type=art_type,
+                              note=f"人工编辑 {aid}（原文件保留）", role="evidence", agent=by)
+
+    def mutate(e):
+        arts = e.setdefault("artifacts", [])
+        cur = next((a for a in arts if a.get("artifact_id") == aid), None)
+        if cur is None:
+            arts.append({"artifact_id": new["artifact_id"], "artifact_type": art_type,
+                         "content_hash": new.get("content_hash", ""),
+                         "uri": new.get("relpath", ""), "role": "evidence"})
+        else:
+            cur.update({"artifact_id": new["artifact_id"], "artifact_type": art_type,
+                        "content_hash": new.get("content_hash", ""),
+                        "uri": new.get("relpath", ""), "role": "evidence"})
+        # 接口卡与 payload 里对旧 ART 的引用一起切到新版本；证据关系不变，只换内容哈希。
+        e["interface"] = _replace_art(e.get("interface"), aid, new["artifact_id"])
+        e["payload"] = _replace_art(e.get("payload"), aid, new["artifact_id"])
+        e["evidence"] = _replace_art(e.get("evidence"), aid, new["artifact_id"])
+        prov = e.setdefault("provenance", {})
+        prov.setdefault("manual_edits", []).append({
+            "at": wfmod.now(), "by": by, "old_artifact": aid, "new_artifact": new["artifact_id"],
+            "source_path": rec.get("relpath") or rec.get("uri", ""), "edit_path": new.get("relpath", ""),
+        })
+
+    w.update_envelope(env_path, mutate, agent=by)
+    verdict, report = w.gate(pkg, verbose=False)
+    invalidated = []
+    reason = f"上游 {pkg} 的工件 {aid} 被人工编辑为新版本 {new['artifact_id']}"
+    for child in _direct_downstream(w, pkg):
+        try:
+            _, ce = w.resolve_pkg(child)
+            if (ce.get("lifecycle") or {}).get("status") in ("invalidated", "superseded"):
+                continue
+            res = w.invalidate(child, reason, agent=by)
+            invalidated.extend(res.get("affected", []))
+        except SystemExit:
+            continue
+    return {"changed": True, "artifact_id": new["artifact_id"], "old_artifact_id": aid,
+            "path": new.get("relpath", ""), "invalidated": sorted(set(invalidated)),
+            "gate": {"verdict": verdict,
+            "blocks": (report or {}).get("blocks", []), "warns": (report or {}).get("warns", [])}}
+
+
 # ---------------------------------------------------------------- 写操作
 
 def _agent(p):
@@ -298,7 +580,7 @@ def _h_propose(w, wfmod, p):
         rejected=p.get("rejected", []),
         constraints=p.get("constraints", []),
         evidence_refs=p.get("evidence", []),
-        scope=p.get("scope", ""),
+        scope=p.get("scope") or pkg_id,
         agent=_agent(p),
         summary=summary,
         task_id=task["task_id"] if task else "",
@@ -368,13 +650,42 @@ def _h_what_if(w, wfmod, p):
     return {"package_id": ref, "verdict": verdict, "report": report}
 
 
+def _has_stale_signoff(w, wfmod, ref):
+    """本包是否还挂着一条“内容已经改过”的待签事项。"""
+    try:
+        _, env = _pkg_by_id(w, ref)
+    except SystemExit:
+        return False
+    cur = wfmod.interface_hash(env)
+    decs = w.decisions()
+    for did in env.get("decision_refs", []):
+        d = decs.get(did)
+        if (d and d.get("reviewer") == "pending-user" and d.get("content_sha")
+                and d["content_sha"] != cur):
+            return True
+    return False
+
+
 def _h_validate(w, wfmod, p):
     ref = p.get("pkg") or p.get("ref")
     if not ref:
         raise SystemExit("validate 需要 pkg 参数")
     _pkg_by_id(w, ref)
     verdict, report = w.gate(ref, verbose=False)
-    return {"package_id": ref, "verdict": verdict, "report": report}
+    signoff = None
+    if verdict in ("pass", "needs_decision") or _has_stale_signoff(w, wfmod, ref):
+        # 手动点“核对”也要维护待签队列：内容改过后换掉旧待签；已经通过则清掉遗留的当前待签。
+        signoff = wfmod.ensure_signoff_pending(w, ref, by=_agent(p) or "平台")
+    return {"package_id": ref, "verdict": verdict, "report": report,
+            "signoff_decision_id": signoff}
+
+
+def _h_layer_report(w, wfmod, p):
+    ref = p.get("pkg") or p.get("ref")
+    if not ref:
+        raise SystemExit("layer_report 需要 pkg 参数")
+    _pkg_by_id(w, ref)
+    return wfmod.ensure_layer_report(w, ref, by=_require_by(p, "生成报告"))
 
 
 def _signer(p, action):
@@ -533,6 +844,28 @@ def _h_task_seal(w, wfmod, p):
     return {"task_id": task, "status": "sealed", "signed_by": user, "reason": reason}
 
 
+def _h_task_archive(w, wfmod, p):
+    task = (p.get("task") or "").strip()
+    if not task:
+        raise SystemExit("task_archive 需要 task")
+    restore = bool(p.get("restore"))
+    _require_by(p, "恢复任务" if restore else "归档任务")
+    _call(wfmod.cmd_task_archive, w, _make_ns(
+        task=task, reason=p.get("reason") or "", restore=restore))
+    return {"task_id": task, "archived": not restore}
+
+
+def _h_task_delete(w, wfmod, p):
+    """彻底删除已归档任务。必须把任务 ID 原样填进 confirm，避免误点。"""
+    task = (p.get("task") or "").strip()
+    if not task:
+        raise SystemExit("task_delete 需要 task")
+    if (p.get("confirm") or "").strip() != task:
+        raise SystemExit(f"错误：删除需要把任务 ID「{task}」原样填进确认框")
+    by = _require_by(p, "删除任务")
+    return wfmod.purge_task(w, task, by)
+
+
 def _h_brief_out(w, wfmod, p):
     """开工简报留档：把这一层的简报写成 <包目录>/brief.md，并在信封里记时间、署名、指纹与上游。"""
     ref = p.get("pkg") or p.get("ref")
@@ -554,6 +887,131 @@ def _h_run_log(w, wfmod, p):
         duration=p.get("duration"), note=p.get("note") or ""))
 
 
+# ---- 配置管理（Agent 管理 / 技能与工具 / 编排配置）----
+#
+# 这些动作改的是平台配置（agent 定义、工具包、流程模板），不是研究数据。共同规则：
+# 记名、带 base_sha 防并发覆盖、写盘前校验、保存前快照、保存后重投影。
+
+def _require_by(p, what):
+    by = (p.get("by") or _agent(p) or "").strip()
+    if not by:
+        raise SystemExit(f"{what}要记名：请先填操作人（agent）")
+    return by
+
+
+def _h_agent_save(w, wfmod, p):
+    target = (p.get("target") or p.get("layer") or "").strip()
+    if not target:
+        raise SystemExit("agent_save 需要 target（如 L5_rtl 或 orchestrator）")
+    meta = {}
+    path = wfmod._agent_path(target)
+    if path.exists():
+        meta, _ = wfmod._parse_agent_frontmatter(path.read_text(encoding="utf-8"))
+    meta.update(p.get("meta") or {})
+    return wfmod.save_agent_definition(target, meta, p.get("body") or "",
+                                       _require_by(p, "保存定义"), p.get("base_sha") or "")
+
+
+def _h_agent_restore(w, wfmod, p):
+    target = (p.get("target") or p.get("layer") or "").strip()
+    sha = (p.get("sha") or "").strip()
+    if not target or not sha:
+        raise SystemExit("agent_restore 需要 target 与 sha")
+    return wfmod.restore_config_version("agent", target, sha, _require_by(p, "回滚"))
+
+
+def _h_toolpack_save(w, wfmod, p):
+    name = (p.get("name") or "").strip()
+    if not name:
+        raise SystemExit("toolpack_save 需要 name")
+    cmds = p.get("commands") or []
+    if isinstance(cmds, str):
+        cmds = [x.strip() for x in cmds.splitlines() if x.strip()]
+    data = {"what": p.get("what") or "", "commands": cmds, "ref": p.get("ref") or ""}
+    return wfmod.save_toolpack(name, data, _require_by(p, "保存工具包"), p.get("base_sha") or "")
+
+
+def _h_toolpack_delete(w, wfmod, p):
+    name = (p.get("name") or "").strip()
+    if not name:
+        raise SystemExit("toolpack_delete 需要 name")
+    return wfmod.delete_toolpack(name, _require_by(p, "删除工具包"), p.get("base_sha") or "")
+
+
+def _h_template_save(w, wfmod, p):
+    tid = (p.get("id") or "").strip()
+    if not tid:
+        raise SystemExit("template_save 需要 id")
+    tpl = {"label": p.get("label") or "", "description": p.get("description") or "",
+           "nodes": p.get("nodes") or [], "gate_overrides": p.get("gate_overrides") or {}}
+    return wfmod.save_flow_template(tid, tpl, _require_by(p, "保存模板"),
+                                    p.get("base_sha") or "", bool(p.get("create")))
+
+
+def _h_template_duplicate(w, wfmod, p):
+    src = (p.get("from") or p.get("from_id") or "").strip()
+    new = (p.get("id") or p.get("new_id") or "").strip()
+    if not src or not new:
+        raise SystemExit("template_duplicate 需要 from 与 id")
+    return wfmod.duplicate_flow_template(src, new, p.get("label") or "",
+                                         _require_by(p, "复制模板"), p.get("base_sha") or "")
+
+
+def _h_reproject(w, wfmod, p):
+    """手动重跑 .zcode/agents 投影（改了文件但没走界面保存时用）。"""
+    _require_by(p, "重投影")
+    return wfmod._reproject_hosts()
+
+
+def _h_redo_layer(w, wfmod, p):
+    """把已作废/被取代的层包重做成同层新包；旧包留在 store 里作审计。"""
+    ref = (p.get("pkg") or p.get("ref") or "").strip()
+    if not ref:
+        raise SystemExit("redo_layer 需要 pkg 参数")
+    _pkg_by_id(w, ref)
+    return wfmod.redo_layer(w, ref, _require_by(p, "重做本层"))
+
+
+# ---- 平台内部运行时：派发层 agent / 作业状态 ----
+
+def _h_runtime_config(w, wfmod, p):
+    _require_by(p, "保存运行时配置")
+    rt = _runtime()
+    try:
+        return rt.save_config({
+            "base_url": p.get("base_url"), "model": p.get("model"),
+            "api_key": p.get("api_key"), "api_key_env": p.get("api_key_env"),
+            "max_turns": p.get("max_turns"), "command_timeout_s": p.get("command_timeout_s"),
+            "engine": p.get("engine"),
+        })
+    except ValueError as e:
+        raise SystemExit(f"错误：{e}")
+
+
+def _h_dispatch(w, wfmod, p):
+    """把一个层包派给平台自己的运行时：它读 agent.md、调模型、执行工具，跑完平台自己 gate。"""
+    ref = (p.get("pkg") or p.get("ref") or "").strip()
+    if not ref:
+        raise SystemExit("dispatch 需要 pkg 参数")
+    _pkg_by_id(w, ref)
+    rt = _runtime()
+    try:
+        job = rt.MANAGER.start(ref, auto=bool(p.get("auto")), by=_require_by(p, "派发"),
+                              agent=(p.get("as") or p.get("agent") or "").strip())
+    except RuntimeError as e:
+        raise SystemExit(f"错误：{e}")
+    return job
+
+
+def _h_stop_job(w, wfmod, p):
+    job_id = (p.get("job") or "").strip()
+    if not job_id:
+        raise SystemExit("stop_job 需要 job 参数")
+    _require_by(p, "停止作业")
+    ok = _runtime().MANAGER.request_stop(job_id)
+    return {"job": job_id, "stopping": ok}
+
+
 HANDLERS = {
     "inspect": _h_inspect,
     "ask": _h_ask,
@@ -572,8 +1030,23 @@ HANDLERS = {
     "iter_seal": _h_iter_seal,
     "iter_abort": _h_iter_abort,
     "task_seal": _h_task_seal,
+    "task_archive": _h_task_archive,
+    "task_delete": _h_task_delete,
     "brief_out": _h_brief_out,
     "run_log": _h_run_log,
+    "agent_save": _h_agent_save,
+    "agent_restore": _h_agent_restore,
+    "toolpack_save": _h_toolpack_save,
+    "toolpack_delete": _h_toolpack_delete,
+    "template_save": _h_template_save,
+    "template_duplicate": _h_template_duplicate,
+    "reproject_hosts": _h_reproject,
+    "redo_layer": _h_redo_layer,
+    "dispatch": _h_dispatch,
+    "stop_job": _h_stop_job,
+    "artifact_save": _h_artifact_save,
+    "layer_report": _h_layer_report,
+    "runtime_config": _h_runtime_config,
 }
 
 
@@ -611,7 +1084,9 @@ def execute_action(body):
         return {"ok": False, "action": action,
                 "error": f"未知动作：{action!r}（可选：{', '.join(sorted(HANDLERS))}）"}
 
-    idem_key = body.get("idempotency_key")
+    # 派发是“开始一个新作业”，不是可重放的幂等写：同一包重派必须真的再跑一次。
+    # 并发由 JobManager 自己保证（同一时刻只允许一个作业）。
+    idem_key = None if action == "dispatch" else body.get("idempotency_key")
     if idem_key:
         cached = _load_idem().get(idem_key)
         if cached:
@@ -758,8 +1233,27 @@ class Handler(SimpleHTTPRequestHandler):
             self._guard(evidence, qs.get("domain", [None])[0])
         elif path == "/api/benchmarks":
             self._guard(benchmarks)
+        elif path == "/api/artifact":
+            self._guard(artifact_read, qs.get("pkg", [None])[0], qs.get("id", [None])[0])
+        elif path == "/api/archived-tasks":
+            self._guard(archived_tasks)
         elif path == "/api/templates":
             self._guard(templates)
+        elif path == "/api/agents":
+            self._guard(agents_config)
+        elif path == "/api/skills":
+            self._guard(skills_shelf)
+        elif path == "/api/tools":
+            self._guard(tools_shelf)
+        elif path == "/api/config/history":
+            self._guard(config_history, qs.get("kind", [""])[0],
+                        qs.get("target", [""])[0], qs.get("sha", [None])[0])
+        elif path == "/api/runtime":
+            self._guard(runtime_status)
+        elif path == "/api/jobs":
+            self._guard(jobs_list)
+        elif path.startswith("/api/job/"):
+            self._guard(job_detail, unquote(path[len("/api/job/"):]))
         elif path == "/api/guide":
             self._guard(guide)
         elif path.startswith("/api/"):

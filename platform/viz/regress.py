@@ -24,11 +24,41 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 PY = sys.executable
+
+
+class FakeModel(BaseHTTPRequestHandler):
+    """回归用的假 OpenAI 兼容接口：先让 agent 跑一条 bash，再让它 finish。"""
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", 0))
+        body = json.loads(self.rfile.read(n).decode())
+        msgs = body.get("messages", [])
+        has_tool = any(m.get("role") == "tool" for m in msgs)
+        has_finish = any(m.get("role") == "tool" and m.get("name") == "finish" for m in msgs)
+        if not has_tool:
+            call = {"name": "bash", "arguments": json.dumps({"command": "echo regress-ok"})}
+        elif not has_finish:
+            call = {"name": "finish", "arguments": json.dumps({"summary": "回归假模型收工"})}
+        else:
+            call = None
+        msg = {"role": "assistant", "content": "done" if call is None else ""}
+        if call:
+            msg["tool_calls"] = [{"id": "call_regress", "type": "function", "function": call}]
+        data = json.dumps({"choices": [{"message": msg}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
 
 def store_fingerprint():
@@ -58,6 +88,57 @@ def build_sandbox(root):
     shutil.copytree(REPO / "domains", root / "domains")
     if (REPO / "tasks").exists():
         shutil.copytree(REPO / "tasks", root / "tasks")
+
+
+def strip_redo_fixture(root):
+    """真实 store 里可能已经有用户点过“重做本层”的新包；旧回归的基线是重做前。
+    沙箱里把这些 redo 包删掉，并清掉旧包上的 replaced_by，只动副本。"""
+    new_ids, paths = set(), []
+    for p in (root / "domains").rglob("envelope.json"):
+        e = json.loads(p.read_text(encoding="utf-8"))
+        if (e.get("provenance") or {}).get("redo_of"):
+            new_ids.add(e["identity"]["package_id"])
+            paths.append(p)
+    for p in paths:
+        shutil.rmtree(p.parent, ignore_errors=True)
+    for p in (root / "domains").rglob("envelope.json"):
+        e = json.loads(p.read_text(encoding="utf-8"))
+        lc = e.get("lifecycle") or {}
+        if lc.get("replaced_by") in new_ids or lc.get("replaced_at"):
+            lc.pop("replaced_by", None)
+            lc.pop("replaced_at", None)
+            e["lifecycle"] = lc
+            p.write_text(json.dumps(e, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if new_ids:
+        gp = root / "platform" / "store" / "graph.jsonl"
+        if gp.exists():
+            rows = [json.loads(l) for l in gp.read_text(encoding="utf-8").splitlines() if l.strip()]
+            rows = [r for r in rows if r.get("from") not in new_ids and r.get("to") not in new_ids]
+            gp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+    return len(new_ids)
+
+
+def restore_invalidated_fixture(root):
+    """真实 store 里用户可能已经作废了一批层包；回归需要一份作废前的基线。
+    沙箱里按信封 history 的最后一条 invalidated 记录把状态恢复回去（只动副本）。"""
+    n = 0
+    for p in (root / "domains").rglob("envelope.json"):
+        e = json.loads(p.read_text(encoding="utf-8"))
+        lc = e.get("lifecycle") or {}
+        if lc.get("status") != "invalidated":
+            continue
+        hist = lc.get("history") or []
+        last = next((h for h in reversed(hist)
+                     if h.get("to") == "invalidated" and h.get("from")), None)
+        if last is None:
+            continue
+        lc["status"] = last["from"]
+        lc["invalidation_reasons"] = []
+        lc["history"] = [h for h in hist if h is not last]
+        e["lifecycle"] = lc
+        p.write_text(json.dumps(e, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        n += 1
+    return n
 
 
 def free_port():
@@ -600,12 +681,24 @@ def run(ctx: Ctx):
                   next(r for r in c["receipts"] if r["pending"])["stale"] is True)
         st, j = ctx.post({"action": "approve", "dec": next(r["decision_id"] for r in c["receipts"] if r["pending"]),
                           "as": "评测者D"})
-        c = ctx.get("/api/package/" + L2N)["card"]
-        ctx.check("批准记录带同一指纹 → 仍然是过期回执；L2 需要人签 → 核对时要求重签",
-                  j.get("ok") and next(r for r in c["receipts"] if not r["pending"])["stale"] is True
-                  and any(r["outcome"] == "批准" for r in c["receipts"]), str(c["receipts"]))
+        ctx.check("批准旧待签 → 被拒：内容已改，旧待签不能批准新内容",
+                  not j.get("ok") and "内容已改" in str(j.get("error")), str(j)[:200])
         st, j = ctx.post({"action": "validate", "pkg": L2N})
-        ctx.check("核对：本层交付没有 BLOCK（此时只被尚未验证的 L1 拦着），原因里写明需要重签",
+        c = ctx.get("/api/package/" + L2N)["card"]
+        new_pending = next((r for r in c["receipts"] if r["pending"]), None)
+        ctx.check("核对会按当前内容生成新待签，旧待签被移出队列",
+                  j.get("ok") and (j.get("result") or {}).get("signoff_decision_id")
+                  and new_pending and new_pending["stale"] is False, str(c["receipts"]))
+        st, j = ctx.post({"action": "approve", "dec": new_pending["decision_id"], "as": "评测者D"})
+        c = ctx.get("/api/package/" + L2N)["card"]
+        signed_now = next(r for r in c["receipts"] if not r["pending"])
+        ctx.check("批准当前待签 → 回执不再过期",
+                  j.get("ok") and signed_now["stale"] is False, str(c["receipts"]))
+        # 再改一次内容：这次留下“已签字但内容改过”的过期回执，测卡片提示
+        ctx.edit_env(L2N, lambda e: e.__setitem__("interface", {"question": "慢在哪（再改）", "gives": [
+            {"id": "S1", "text": "再次改过的一版", "truth": "deduced", "evidence": []}]}))
+        st, j = ctx.post({"action": "validate", "pkg": L2N})
+        ctx.check("核对再改后的内容：本层交付没有 BLOCK（此时只被尚未验证的 L1 拦着），原因里写明需要重签",
                   all(b.startswith("upstream:") for b in j["result"]["report"]["blocks"])
                   and any("需要重签" in w_ for w_ in j["result"]["report"]["warns"]),
                   str(j.get("result", {}).get("report"))[:300])
@@ -915,7 +1008,10 @@ def run(ctx: Ctx):
                           for g in sa["layers"].values() for p in g["packages"]),
               f"{before_pkgs} → {sa['summary']['total_packages']}")
     ctx.check("归档任务上的待批事项不进队列（仍是可批的，只是不展示）",
-              sa["summary"]["pending_decisions"] < before_pending
+              not any(d.get("task_id") in {"TASK-sme2-flow1", "TASK-cvfpu-bugfix-demo"}
+                      or any(p.startswith("PKG-L") and ("sme2" in p or "cvfpu-anchor" in p)
+                             for p in d.get("package_ids", []))
+                      for d in sa["pending_decisions"])
               and not any("sme2" in p for d in sa["pending_decisions"] for p in d["package_ids"]),
               f"{before_pending} → {sa['summary']['pending_decisions']}")
     ctx.check("折叠数不再算归档的包", sa["summary"]["hidden_packages"] == before_hidden - 22,
@@ -944,6 +1040,276 @@ def run(ctx: Ctx):
               and sr["summary"]["total_packages"] == before_pkgs
               and sr["summary"]["pending_decisions"] == before_pending)
 
+    print("R18 配置管理：Agent 编辑 / 版本历史 / 技能与工具货架 / 编排配置")
+    ag = ctx.get("/api/agents")
+    ctx.check("Agent 管理：九份定义都带正文与当前指纹",
+              len(ag["agents"]) == 9 and not ag["errors"]
+              and all(a.get("body") and len(a.get("sha", "")) == 64 for a in ag["agents"]),
+              str(ag.get("errors"))[:160])
+    sk = ctx.get("/api/skills")
+    skmap = {s["name"]: s for s in sk["skills"]}
+    ctx.check("技能货架：四个技能，标出 GENERATED 与方法论源、被哪些 agent 使用",
+              len(sk["skills"]) == 4 and skmap["flow-layer-discipline"]["generated"]
+              and skmap["flow-layer-discipline"]["source"].endswith("layer-discipline.md")
+              and len(skmap["flow-layer-discipline"]["used_by"]) == 8
+              and not skmap["rtl-generation-discipline"]["generated"], str(list(skmap))[:200])
+    tps = ctx.get("/api/tools")
+    ctx.check("工具包货架：八个包，wf:core 被多层使用",
+              len(tps["packs"]) == 8 and not tps["errors"]
+              and len(next(p for p in tps["packs"] if p["name"] == "wf:core")["used_by"]) >= 5,
+              str(tps.get("errors"))[:160])
+    tpls = ctx.get("/api/templates")
+    ctx.check("模板端点：七个基础模板 + 九个组件 + 原始节点 + 文件指纹",
+              [t["id"] for t in tpls["templates"][:7]] == [
+                  "microarch_optimize", "bug_fix_simple", "bug_fix_with_attribution",
+                  "comparative_study", "component_design", "batch_calibration", "benchmark_only"]
+              and len(tpls["components"]) == 9
+              and tpls["templates"][0]["nodes"][0]["component"] == "L1"
+              and len(tpls["sha"]) == 64, str(tpls)[:200])
+
+    l1 = next(a for a in ag["agents"] if a["target"] == "L1_observation")
+    old_name, old_sha = l1["name"], l1["sha"]
+    meta = {k: l1[k] for k in ("layer", "name", "host_name", "role",
+                              "skills", "tools", "writes", "must_not")}
+    meta["name"] = "观测 agent（回归改名）"
+    st, j = ctx.post({"action": "agent_save", "target": "L1_observation", "meta": meta,
+                      "body": l1["body"], "agent": "tester", "base_sha": old_sha})
+    saved = (j.get("result") or {})
+    ctx.check("保存 agent 定义：写盘 / 快照 / 重投影九份宿主定义",
+              j.get("ok") and saved.get("changed") and saved.get("projection", {}).get("written") == 9
+              and saved.get("snapshot", {}).get("by") == "tester", str(j)[:240])
+    new_sha = saved.get("sha", "")
+    g2 = ctx.get("/api/guide")
+    ctx.check("定义改动立刻生效：/api/guide 与 .zcode 投影都是新名字",
+              next(x for x in g2["layers"] if x["layer"] == "L1")["agent"]["name"] == meta["name"]
+              and meta["name"] in (ctx.root / ".zcode" / "agents" / "sim-layer-l1.md").read_text(encoding="utf-8"))
+    hist = ctx.get("/api/config/history?kind=agent&target=L1_observation")
+    ctx.check("版本历史：保存前快照 + 本次保存，当前指纹对得上",
+              len(hist["entries"]) == 2 and hist["current_sha"] == new_sha
+              and any(e["note"] == "保存前快照" and e["sha"] == old_sha for e in hist["entries"])
+              and any(e["note"] == "保存" and e["sha"] == new_sha for e in hist["entries"]),
+              str(hist["entries"])[:240])
+    snap = ctx.get("/api/config/history?kind=agent&target=L1_observation&sha=" + old_sha)
+    ctx.check("历史版本可取回原文", old_name in snap.get("text", "") and snap["entry"]["sha"] == old_sha,
+              str(snap)[:160])
+    st, j = ctx.post({"action": "agent_save", "target": "L1_observation", "meta": meta,
+                      "body": l1["body"], "agent": "tester", "base_sha": old_sha})
+    ctx.check("旧 base_sha 被拒：不会覆盖别人刚做的改动",
+              not j.get("ok") and "别人改过" in str(j.get("error")), str(j)[:160])
+    bad_meta = dict(meta, tools=["nope"])
+    st, j = ctx.post({"action": "agent_save", "target": "L1_observation", "meta": bad_meta,
+                      "body": l1["body"], "agent": "tester", "base_sha": new_sha})
+    ctx.check("非法定义不写盘（引用不存在的工具包）",
+              not j.get("ok") and "不在工具包清单" in str(j.get("error"))
+              and next(a for a in ctx.get("/api/agents")["agents"]
+                       if a["target"] == "L1_observation")["sha"] == new_sha, str(j)[:200])
+    st, j = ctx.post({"action": "agent_save", "target": "L1_observation", "meta": meta,
+                      "body": l1["body"], "agent": "", "base_sha": new_sha})
+    ctx.check("不记名的保存被拒", not j.get("ok") and "记名" in str(j.get("error")), str(j)[:120])
+    st, jr = ctx.post({"action": "agent_restore", "target": "L1_observation",
+                       "sha": old_sha, "agent": "tester"})
+    ctx.check("回滚到保存前版本：文件与投影都恢复",
+              jr.get("ok") and next(x for x in ctx.get("/api/guide")["layers"]
+                                    if x["layer"] == "L1")["agent"]["name"] == old_name
+              and old_name in (ctx.root / ".zcode" / "agents" / "sim-layer-l1.md").read_text(encoding="utf-8")
+              and len(ctx.get("/api/config/history?kind=agent&target=L1_observation")["entries"]) >= 3,
+              str(jr)[:200])
+
+    tps = ctx.get("/api/tools")
+    st, j = ctx.post({"action": "toolpack_save", "name": "test:pack", "what": "回归测试包",
+                      "commands": ["echo ok"], "agent": "tester", "base_sha": tps["sha"]})
+    ctx.check("新建工具包", j.get("ok") and j["result"].get("changed")
+              and any(p["name"] == "test:pack" for p in ctx.get("/api/tools")["packs"]), str(j)[:160])
+    tps = ctx.get("/api/tools")
+    st, j = ctx.post({"action": "toolpack_save", "name": "test:pack", "what": "回归测试包（改）",
+                      "ref": "domains/x/environment.md", "agent": "tester", "base_sha": tps["sha"]})
+    ctx.check("编辑工具包：用途更新",
+              j.get("ok") and next(p for p in ctx.get("/api/tools")["packs"]
+                                   if p["name"] == "test:pack")["what"] == "回归测试包（改）", str(j)[:160])
+    tps = ctx.get("/api/tools")
+    st, j = ctx.post({"action": "toolpack_delete", "name": "caselaw", "agent": "tester",
+                      "base_sha": tps["sha"]})
+    ctx.check("被 agent 使用的工具包不能删", not j.get("ok") and "仍被" in str(j.get("error")), str(j)[:160])
+    tps = ctx.get("/api/tools")
+    st, j = ctx.post({"action": "toolpack_delete", "name": "test:pack", "agent": "tester",
+                      "base_sha": tps["sha"]})
+    ctx.check("未被使用的工具包可删",
+              j.get("ok") and not any(p["name"] == "test:pack" for p in ctx.get("/api/tools")["packs"]),
+              str(j)[:160])
+
+    tpls = ctx.get("/api/templates")
+    probe = {"action": "template_save", "id": "probe_flow", "label": "探针流程",
+             "description": "L1 → L8", "nodes": [{"component": "L1", "alias": "a"},
+                                                 {"component": "L8", "alias": "z"}],
+             "gate_overrides": {}, "create": True, "agent": "tester", "base_sha": tpls["sha"]}
+    st, j = ctx.post(probe)
+    ctx.check("新建流程模板", j.get("ok") and j["result"].get("changed"), str(j)[:200])
+    tpls = ctx.get("/api/templates")
+    ctx.check("新模板出现在清单里，节点顺序保留",
+              next(t for t in tpls["templates"] if t["id"] == "probe_flow")["nodes"]
+              == [{"component": "L1", "alias": "a"}, {"component": "L8", "alias": "z"}],
+              str(tpls["templates"][-1])[:200])
+    st, jt = ctx.post({"action": "task_new", "title": "探针任务", "slug": "probe-flow",
+                       "goal": "验证探针模板的两个框", "benchmarks": ["kernel-x"],
+                       "template": "probe_flow", "create": True, "agent": "tester"})
+    pv = next((t for t in ctx.get("/api/state")["tasks"] if t["task_id"] == "TASK-probe-flow"), {})
+    ctx.check("按新模板立项：迭代里正好两个框（L1 → L8）",
+              jt.get("ok") and [n["layer"] for n in (pv.get("iterations") or [{}])[0].get("nodes", [])]
+              == ["L1", "L8"], str(pv)[:200])
+    tpls = ctx.get("/api/templates")
+    st, j = ctx.post({"action": "template_save", "id": "probe_flow", "label": "探针流程（改）",
+                      "description": "L1 → L8", "nodes": probe["nodes"], "gate_overrides": {},
+                      "agent": "tester", "base_sha": tpls["sha"]})
+    pv = next((t for t in ctx.get("/api/state")["tasks"] if t["task_id"] == "TASK-probe-flow"), {})
+    ctx.check("改模板 label 立刻反映到任务（单一来源在数据文件）",
+              j.get("ok") and pv.get("template_label") == "探针流程（改）", str(pv.get("template_label")))
+    tpls = ctx.get("/api/templates")
+    st, j = ctx.post({"action": "template_duplicate", "from": "probe_flow", "id": "probe_copy",
+                      "label": "探针副本", "agent": "tester", "base_sha": tpls["sha"]})
+    ctx.check("复制模板", j.get("ok") and any(t["id"] == "probe_copy"
+                                            for t in ctx.get("/api/templates")["templates"]), str(j)[:160])
+    tpls = ctx.get("/api/templates")
+    st, j = ctx.post({"action": "template_save", "id": "probe_bad", "label": "坏模板",
+                      "description": "x", "nodes": [{"component": "L9", "alias": "a"}],
+                      "gate_overrides": {}, "create": True, "agent": "tester", "base_sha": tpls["sha"]})
+    ctx.check("非法组件被拒，模板数据未写坏",
+              not j.get("ok") and "未知组件" in str(j.get("error"))
+              and "probe_bad" not in [t["id"] for t in ctx.get("/api/templates")["templates"]], str(j)[:200])
+    st, j = ctx.post({"action": "skill_save", "name": "flow-layer-discipline"})
+    ctx.check("技能只读：没有 skill_save 这个动作",
+              not j.get("ok") and "未知动作" in str(j.get("error")), str(j)[:120])
+
+    print("R19 平台内部运行时：派发 / 工具执行 / 平台核对 / 作业日志")
+    rt = ctx.get("/api/runtime")
+    ctx.check("运行时配置已就绪（回归用假模型）",
+              rt["config"]["configured"] and rt["config"]["model"] == "regress-model",
+              str(rt.get("config"))[:160])
+    sv = ctx.get("/api/state")
+    waiting = next(((L, p) for L, grp in sv["layers"].items() for p in grp["packages"]
+                    if p["state"] == "待人决定" and L in ("L1", "L2", "L3", "L4", "L6", "L8")), None)
+    ctx.check("回归夹具里有高权重层在待人决定", waiting is not None)
+    dispatch_pkg = waiting[1]["package_id"] if waiting else "PKG-L1-sme2-benchmark-attention"
+    st, jd = ctx.post({"action": "dispatch", "pkg": dispatch_pkg, "auto": False, "agent": "tester",
+                       "idempotency_key": "regress-dispatch-same"})
+    jid = (jd.get("result") or {}).get("job_id", "")
+    ctx.check("派发成功，返回作业号", jd.get("ok") and jid, str(jd)[:200])
+    job = {}
+    for _ in range(100):
+        job = ctx.get(f"/api/job/{jid}") if jid else {}
+        if job.get("status") in ("passed", "needs_decision", "gate_failed", "error", "stopped", "max_turns"):
+            break
+        time.sleep(0.1)
+    events = [e.get("event") for e in job.get("log", [])]
+    blob = json.dumps(job.get("log", []), ensure_ascii=False)
+    ctx.check("作业里能看到：工具调用 → 结果 → finish → 平台核对",
+              "tool_call" in events and "tool_result" in events and "finish" in events
+              and "gate" in events and "regress-ok" in blob, str(events)[:200])
+    ctx.check("核对由平台做，作业状态来自核对结论",
+              job.get("gate_verdict") in ("pass", "fail", "needs_decision")
+              and job.get("status") in ("passed", "gate_failed", "needs_decision"),
+              f"{job.get('status')} / {job.get('gate_verdict')}")
+    jp = ctx.root / "platform" / "runtime" / "jobs" / f"{jid}.json"
+    ctx.check("作业记录与日志落盘", bool(jid) and jp.exists()
+              and (ctx.root / "platform" / "runtime" / "jobs" / f"{jid}.jsonl").exists())
+    if waiting:
+        sid = job.get("signoff_decision_id", "")
+        ctx.check("只差签字时，运行时按本层产出自动生成待签事项（不需要人开工前提请）",
+                  job.get("status") == "needs_decision" and bool(sid)
+                  and "signoff_pending" in events, f"{job.get('status')} / {sid}")
+        pk = ctx.get(f"/api/package/{dispatch_pkg}")
+        ctx.check("待签事项挂在本层回执上，人可以直接批准/驳回",
+                  bool(sid) and any(r.get("decision_id") == sid for r in pk["card"]["receipts"]),
+                  str(pk["card"]["receipts"])[:200])
+    st, jd2 = ctx.post({"action": "dispatch", "pkg": dispatch_pkg, "auto": False, "agent": "tester",
+                        "idempotency_key": "regress-dispatch-same"})
+    jid2 = (jd2.get("result") or {}).get("job_id", "")
+    ctx.check("同一幂等键重派 → 真的新开作业，不是旧结果重放",
+              jd2.get("ok") and jid2 and jid2 != jid and not jd2.get("idempotent_replay"),
+              str(jd2)[:200])
+    for _ in range(100):
+        j2 = ctx.get(f"/api/job/{jid2}") if jid2 else {}
+        if j2.get("status") in ("passed", "needs_decision", "gate_failed", "error", "stopped", "max_turns"):
+            break
+        time.sleep(0.1)
+    # 造一个作废包来测“作废后不能派发 / 一键重做”（只动沙箱）
+    live0 = next((t for t in sv["tasks"] if t["status"] in ("draft", "active")), None)
+    l1_node0 = next((n for n in (live0["iterations"][0]["nodes"] if live0 else [])
+                     if n["layer"] == "L1" and n["own"]), None)
+    ctx.check("回归夹具里有可作废的 L1 包", l1_node0 is not None)
+    if l1_node0:
+        ctx.post({"action": "revise", "pkg": l1_node0["own"][0], "reason": "回归：测作废与重做",
+                  "agent": "tester"})
+        sv = ctx.get("/api/state")
+    live_pair = next(((t, it) for t in sv["tasks"] if t["status"] in ("draft", "active")
+                      for it in t["iterations"] if it["status"] in ("draft", "active")), None)
+    live_node = next((n for n in (live_pair[1]["nodes"] if live_pair else [])
+                      if n["state"] == "已作废" and n["own"]), None)
+    inv = pkg_of(sv, live_node["own"][0]) if live_node else None
+    ctx.check("回归夹具里有进行中迭代里的已作废层包", inv is not None)
+    if inv:
+        st, jx = ctx.post({"action": "dispatch", "pkg": inv["package_id"], "agent": "tester"})
+        ctx.check("已作废的层包不能派发（防止在死包上继续跑）",
+                  not jx.get("ok") and "已作废" in str(jx.get("error")), str(jx)[:200])
+        ctx.check("作废包上的待批事项不进人的决定队列",
+                  not any(inv["package_id"] in d.get("package_ids", [])
+                          for d in sv.get("pending_decisions", [])), str(sv.get("pending_decisions"))[:200])
+        st, jr = ctx.post({"action": "redo_layer", "pkg": inv["package_id"], "agent": "tester"})
+        new_id = (jr.get("result") or {}).get("package_id", "")
+        ctx.check("重做本层：新建同层包，旧包保留",
+                  jr.get("ok") and new_id and new_id != inv["package_id"], str(jr)[:220])
+        if new_id:
+            newp = ctx.get(f"/api/package/{new_id}")
+            old_env = ctx.env(inv["package_id"])
+            ctx.check("新包是新草稿，旧包记录 replaced_by",
+                      newp["card"]["state"]["lifecycle"] == "draft"
+                      and old_env["lifecycle"].get("replaced_by") == new_id,
+                      f"{newp['card']['state']} / {old_env['lifecycle'].get('replaced_by')}")
+            st2 = ctx.get("/api/state")
+            layer = inv["card"]["layer"]
+            node = next(n for t in st2["tasks"] for it in t["iterations"]
+                        if it["iteration_id"] == live_pair[1]["iteration_id"]
+                        for n in it["nodes"] if n["layer"] == layer)
+            ctx.check("重做后这一框用新包，不再被旧作废包拖成已作废",
+                      new_id in node["own"] and inv["package_id"] not in node["own"]
+                      and node["state"] != "已作废", str(node)[:220])
+    st, jc = ctx.post({"action": "runtime_config", "base_url": "http://127.0.0.1:9/v1",
+                       "model": "regress-model", "agent": "tester"})
+    ctx.check("运行时可从界面保存配置（密钥不落明文回显）",
+              jc.get("ok") and "api_key" not in (jc.get("result") or {}), str(jc)[:160])
+
+    print("R20 任务归档 / 恢复 / 彻底删除")
+    st, jt = ctx.post({"action": "task_new", "title": "临时删除任务", "slug": "delete-me",
+                       "goal": "验证归档与删除", "benchmarks": ["kernel-x"],
+                       "template": "bug_fix_simple", "create": True, "agent": "tester"})
+    tid = (jt.get("result") or {}).get("task_id", "")
+    ctx.check("建一个可删除的临时任务", jt.get("ok") and tid, str(jt)[:200])
+    sv = ctx.get("/api/state")
+    tmp_task = next((t for t in sv["tasks"] if t["task_id"] == tid), {})
+    tmp_pkgs = [p for it in tmp_task.get("iterations", []) for n in it["nodes"] for p in n["own"]]
+    ctx.check("临时任务有自己的层包", bool(tmp_pkgs), str(tmp_task)[:200])
+    st, ja = ctx.post({"action": "task_archive", "task": tid, "reason": "回归", "agent": "tester"})
+    ctx.check("归档任务", ja.get("ok") and tid not in
+              [t["task_id"] for t in ctx.get("/api/state")["tasks"]], str(ja)[:160])
+    arch = ctx.get("/api/archived-tasks")["tasks"]
+    ctx.check("归档任务出现在已归档清单里", any(a["task_id"] == tid for a in arch),
+              str(arch)[:200])
+    ctx.check("归档后不在状态导出里", tid not in [t["task_id"] for t in ctx.get("/api/state")["tasks"]])
+    st, jr = ctx.post({"action": "task_archive", "task": tid, "restore": True, "agent": "tester"})
+    ctx.check("恢复归档任务", jr.get("ok") and tid in [t["task_id"] for t in ctx.get("/api/state")["tasks"]],
+              str(jr)[:160])
+    ctx.post({"action": "task_archive", "task": tid, "reason": "回归删除", "agent": "tester"})
+    st, jbad = ctx.post({"action": "task_delete", "task": tid, "confirm": "wrong", "agent": "tester"})
+    ctx.check("删除必须原样填任务 ID", not jbad.get("ok") and "确认框" in str(jbad.get("error")), str(jbad)[:160])
+    st, jdel = ctx.post({"action": "task_delete", "task": tid, "confirm": tid, "agent": "tester"})
+    ctx.check("彻底删除任务", jdel.get("ok") and (jdel.get("result") or {}).get("packages") == len(tmp_pkgs),
+              str(jdel)[:220])
+    tmp_left = [x for p in tmp_pkgs for x in ctx.root.glob(f"domains/*/L*/{p}")]
+    ctx.check("删除后任务与层包都不在状态里",
+              tid not in [t["task_id"] for t in ctx.get("/api/state")["tasks"]] and not tmp_left,
+              f"tasks={[t['task_id'] for t in ctx.get('/api/state')['tasks']]} left={tmp_left}")
+    backups = list((ctx.root / ".zcode" / "backups").glob(f"task-delete-{tid}-*"))
+    ctx.check("删除前写了一份删除清单", bool(backups), str(backups)[:120])
+
     print("R9 引擎自检")
     rc, out = ctx.wf("selftest")
     ctx.check("wf selftest 全部符合预期", rc == 0 and "15/15" in out, out.splitlines()[-1][:60] if out else "无输出")
@@ -953,12 +1319,25 @@ def main():
     before = store_fingerprint()
     sandbox = Path(tempfile.mkdtemp(prefix="viz-regress-"))
     proc = None
+    fake = None
     try:
         build_sandbox(sandbox)
+        stripped = strip_redo_fixture(sandbox)
+        if stripped:
+            print(f"（沙箱夹具：去掉了真实 store 里 {stripped} 个重做包，恢复重做前基线）")
+        restored = restore_invalidated_fixture(sandbox)
+        print(f"（沙箱夹具：已把 {restored} 个作废层包恢复到作废前状态，供回归使用）")
         port = free_port()
+        # 运行时的假模型：只在本机回环，避免回归依赖外部 API
+        fake = ThreadingHTTPServer(("127.0.0.1", 0), FakeModel)
+        threading.Thread(target=fake.serve_forever, daemon=True).start()
         # 双保险：环境里显式给出 WF_ROOT，且启动前先清掉可能继承来的同名变量
         env = {k: v for k, v in os.environ.items() if k != "WF_ROOT"}
         env["WF_ROOT"] = str(sandbox)
+        env["RUNTIME_ENGINE"] = "v1"  # 旧回归跑 v1；v2 另有独立 smoke
+        env["RUNTIME_BASE_URL"] = f"http://127.0.0.1:{fake.server_address[1]}/v1"
+        env["RUNTIME_MODEL"] = "regress-model"
+        env["RUNTIME_API_KEY"] = "regress-key"
         proc = subprocess.Popen(
             [PY, str(sandbox / "platform" / "viz" / "server.py"), "--port", str(port)],
             cwd=sandbox, env=env, start_new_session=True,
@@ -986,6 +1365,8 @@ def main():
                 proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        if fake is not None:
+            fake.shutdown()
         shutil.rmtree(sandbox, ignore_errors=True)
 
     print(f"\n回归结果：{ctx.passed} 通过 / {ctx.failed} 失败")
