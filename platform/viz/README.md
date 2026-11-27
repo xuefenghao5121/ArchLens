@@ -40,7 +40,7 @@ python3 platform/viz/server.py --port 8899 --allow-origin http://192.168.1.10:51
 ## 端点
 
 ```
-GET  /                                     → index.html（单文件版，只读）
+GET  /                                     → API 跳转页（React 工作台在 5173）
 GET  /api/state                           → workflow-state.json（schema 0.5）：每个层包带 state 状态词与 card 卡片，
                                            每个迭代带模板顺序的 nodes 与每框的 agent，每个任务带 receipts 任务级决定回执。
                                            ?domain= 仅为兼容旧调用，界面上不再有领域

@@ -105,7 +105,7 @@ platform/
 ├── agents/       九份层 agent 定义（agent.md）、工具包清单、流程模板数据
 ├── templates/    领域包与交付物的模板
 ├── caselaw/      判例库
-└── viz/          服务端、回归、命令行冒烟、单文件只读页
+└── viz/          服务端、回归、命令行冒烟、API 跳转页
 frontend/         React 界面
 adapters/         仿真器适配器
 env/              工具链与构建配方
