@@ -14,6 +14,15 @@
     "baseline_ref": {"type": "string"},
     "control": {"type": "string"},
     "intervention": {"type": "string"},
+    "comparison": {
+      "type": "object",
+      "description": "这条测试比的是什么：拿什么和什么比、在什么激励下。页面会原样写成一句话给人看；没记录就显示「比较对象没有记录」。",
+      "properties": {
+        "under_test": {"type": "string", "description": "被测对象（哪个文件/哪个版本）"},
+        "reference": {"type": "string", "description": "参照对象（和谁比：参考模型、基线、golden……）"},
+        "stimulus": {"type": "string", "description": "在什么激励/输入下比"}
+      }
+    },
     "fixed_variables": {"type": "object"},
     "predicted_direction": {"type": "string", "minLength": 1},
     "effect_threshold": {"type": "string"},

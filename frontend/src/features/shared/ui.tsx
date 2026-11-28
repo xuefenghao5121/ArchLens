@@ -20,7 +20,7 @@ export function StateChip({ word, why, small }: { word: StateWord; why?: string;
 
 /** 状态词的解释。给第一次看的人：一句话说清每个词是什么意思。 */
 export function StateLegend() {
-  const order: StateWord[] = ['未开始', '进行中', '待人决定', '未验证', '有问题', '已验证', '已作废']
+  const order: StateWord[] = ['未开始', '进行中', '待人决定', '未验证', '有问题', '核对通过', '已作废']
   return (
     <details className="legend">
       <summary>状态词是什么意思</summary>

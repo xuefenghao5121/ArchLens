@@ -74,6 +74,9 @@ EDGE_TYPES = ["derived_from", "generated_from", "validated_by", "decided_by",
               "depends_on", "invalidated_by", "contradicted_by", "supersedes"]
 BAD_LIFECYCLE = {"invalidated", "superseded"}
 VERDICTS_PASS = "pass"
+# 核对通过的状态词。不叫「已验证」：核对查的是结构、登记证据、上游状态、测试登记与签字，
+# 不查结论内容对不对——状态词不能替人下结论。核对了什么、没核对什么见 layer_card 的 state.scope。
+PASS_WORD = "核对通过"
 # 设计文档 §2.4/§4.2：只有这三类决策构成"人类批准"；reject/defer 不放行
 APPROVING_TYPES = {"select", "ratify", "override"}
 # 设计文档 §6.2：各层推荐验证强度（vcheck 用）
@@ -789,7 +792,7 @@ class WF:
                               "——上游没验证完，下游不能通过")
             elif new_pkg and p["lifecycle"]["status"] != "passed":
                 # 新建任务下的层包：上游没验证完，下游不能通过（防偷跑）
-                blocks.append(f"upstream: 父包 {parent} 尚未验证（{STATE_WORD.get(p['lifecycle']['status'], p['lifecycle']['status'])}）"
+                blocks.append(f"upstream: 父包 {parent} 还没核对通过（{STATE_WORD.get(p['lifecycle']['status'], p['lifecycle']['status'])}）"
                              "——上游没验证完，下游不能通过")
 
         # 4b. 包自身已失效/被取代：重新门禁不得解除（§5.3 不得覆盖原始失败证据）。
@@ -877,7 +880,7 @@ class WF:
                 if not (was_archived and not override):
                     e["lifecycle"]["status"] = status_map[verdict]
                 if _is_new_package(e):
-                    # 记下这次核对的是哪份接口卡：之后内容改了，「已验证」就不再成立
+                    # 记下这次核对的是哪份接口卡：之后内容改了，「核对通过」就不再成立
                     e["validation"]["interface_sha"] = interface_hash(e)
                 if override:
                     e["lifecycle"].setdefault("invalidation_reasons", []).append(
@@ -2084,7 +2087,7 @@ def interface_hash(env):
 
 def iface_drifted(env):
     """新建任务下的层包：上次核对时记下了接口卡的指纹（validation.interface_sha）。
-    与现在的指纹不一致 = 核对通过之后内容改过——「已验证」只对核对过的那份内容成立，改过就要重新核对。
+    与现在的指纹不一致 = 核对通过之后内容改过——「核对通过」只对核对过的那份内容成立，改过就要重新核对。
     旧包没有这个指纹，行为不变。"""
     sha = (env.get("validation") or {}).get("interface_sha")
     return bool(sha) and sha != interface_hash(env)
@@ -2442,19 +2445,33 @@ def _receipts(w, env):
             # 回执正文已经写了被批准的那条时，不再重复一遍
             rec["about"] = "" if about and about in rec["summary"] else about
             rec["outcome"] = "驳回" if d.get("decision_type") == "reject" else "批准"
+            # 人写的那句话（批准时核对了什么、为什么驳回）原样带出来。
+            # 旧记录没留人的判断，只有平台自动填的待签说明：那种不当作批注显示。
+            note = str(d.get("rationale") or "").strip()
+            tid = str(target.get("decision_id") or "")
+            for pre in (f"批准 {tid}：", f"驳回 {tid}：", f"批准 {tid}", f"驳回 {tid}"):
+                if tid and note.startswith(pre):
+                    note = note[len(pre):].strip()
+                    break
+            if note.startswith("平台根据本层已产出的结果生成待签事项"):
+                note = ""
+            rec["note"] = _s(note, 200)
         out.append(rec)
     out.sort(key=lambda r: (not r["pending"], r["at"]))
     return out
 
 
-def _evidence_lines(w, env, iface):
-    """证据清单：登记在册的测试（名称、结论、强度）与工件（编号、哈希、路径）。
+def _evidence_lines(w, env, iface, ancestor_arts=None, is_root=False):
+    """证据清单：登记在册的测试（名称、结论、强度、比较对象）与工件（编号、哈希、路径、来源）。
 
     测试结果不只来自本包 validation 里登记的那几条：接口卡 gives 可以直接引用上游（如 L7）
     的 RES。两者都要进清单，否则前端拿 id 查不到，会误显示成“不在登记册”。
+
+    ancestor_arts：上游各包登记过的工件编号集合，用来判断一份交付的内容是不是上游早就有的。
     """
     tests, runs, results, arts = w.tests(), w.runs(), w.results(), w.artifacts()
     v = env.get("validation", {})
+    ancestor_arts = ancestor_arts or set()
     out = []
     run_artifacts = {}
     cited_results = {str(x) for g in iface.get("gives", []) for x in (g.get("evidence") or [])
@@ -2473,6 +2490,7 @@ def _evidence_lines(w, env, iface):
             aid = run.get(key)
             if aid:
                 run_artifacts.setdefault(aid, []).append(rid)
+        comp = td.get("comparison") if isinstance(td.get("comparison"), dict) else None
         out.append({"id": rid, "kind": "test",
                     "title": td.get("title") or td.get("test_id") or run.get("run_id", rid),
                     "proposition": _s(td.get("proposition"), 100), "verdict": res.get("verdict"),
@@ -2480,6 +2498,9 @@ def _evidence_lines(w, env, iface):
                     "executor": run.get("executor", ""), "at": run.get("started_at", ""),
                     "package_ref": run.get("package_ref", ""),
                     "log": run.get("log_artifact", ""), "raw": run.get("raw_result_artifact", ""),
+                    # 比的是什么：拿什么和什么比、在什么激励下；对照组与干预是 test 定义里原有的栏
+                    "comparison": comp, "control": _s(td.get("control"), 200),
+                    "intervention": _s(td.get("intervention"), 200),
                     "cited": cited, "for_statement": _for_statement(rid)})
 
     for rid in v.get("test_result_refs", []):
@@ -2507,6 +2528,7 @@ def _evidence_lines(w, env, iface):
                     "artifact_type": a.get("artifact_type", ""), "hash": (a.get("content_hash") or "")[:12],
                     "path": rec.get("relpath") or rec.get("store_path") or rec.get("uri", ""),
                     "role": a.get("role", ""),
+                    "origin": _artifact_origin(env, a.get("role", ""), rec, ancestor_arts, is_root),
                     "cited": (a.get("artifact_id") in cited_arts or a.get("artifact_id") in run_artifacts
                               or a.get("role") in ("layer-report", "layer-contract", "layer-delivery-machine")),
                     "for_test": sorted(set(run_artifacts.get(a.get("artifact_id"), [])))})
@@ -2520,8 +2542,177 @@ def _evidence_lines(w, env, iface):
                     "artifact_type": rec.get("artifact_type", ""), "hash": (rec.get("content_hash") or "")[:12],
                     "path": rec.get("relpath") or rec.get("store_path") or rec.get("uri", ""),
                     "role": rec.get("role", ""),
+                    "origin": _artifact_origin(env, rec.get("role", ""), rec, ancestor_arts, is_root),
                     "cited": True, "for_test": sorted(set(run_artifacts.get(aid, [])))})
     return out
+
+
+def _ancestor_artifacts(w, parent_ids, pkg_index):
+    """上游各包（沿 parent_package_refs 一路向上）登记过的工件编号，以及上游包本身。"""
+    arts, pkgs, queue, seen = set(), [], list(parent_ids or []), set()
+    while queue:
+        pid = queue.pop(0)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        pe = (pkg_index or {}).get(pid)
+        if not pe:
+            continue
+        pkgs.append(pe)
+        for a in pe.get("artifacts") or []:
+            if a.get("artifact_id"):
+                arts.add(a["artifact_id"])
+        queue.extend((pe.get("provenance") or {}).get("parent_package_refs") or [])
+    return arts, pkgs
+
+
+def _artifact_origin(env, role, rec, ancestor_arts, is_root=False):
+    """这份内容是哪来的。
+
+    登记册按内容寻址：同一份内容第二次登记时，返回的是第一次登记的记录（路径、时间都是第一次的）。
+    所以“内容在本包建立之前就已经在登记册里”可以机械判断——它不是本层产出的。
+    只标注、不拦截：结论层引用上游的日志是正常的，标出来是为了让看的人一眼知道。
+    """
+    rel = rec.get("relpath") or ""
+    first_raw = rec.get("registered_at") or ""
+    first_at = first_raw[:16].replace("T", " ")
+    created = (env.get("provenance") or {}).get("created_at") or ""
+    if role in ("layer-report", "layer-contract", "layer-delivery-machine"):
+        return {"kind": "own", "path": rel, "at": first_at, "note": "平台按本包内容生成的交付"}
+    if is_root:
+        # 没有上游的层：它登记的就是任务的基准输入，本来就不是“产出”
+        return {"kind": "input", "path": rel, "at": first_at, "note": "任务的基准输入"}
+    # 两个时间戳格式相同（精确到秒），按原文比较；不要拿格式化后的显示文本比
+    if first_raw[:16] and created[:16] and first_raw[:16] < created[:16]:
+        if rec.get("artifact_id") in (ancestor_arts or set()):
+            return {"kind": "upstream", "path": rel, "at": first_at}
+        if rel.startswith("missions/"):
+            return {"kind": "input", "path": rel, "at": first_at}
+        return {"kind": "preexisting", "path": rel, "at": first_at}
+    return {"kind": "own", "path": rel, "at": first_at}
+
+
+# 只陈述登记册里能机械判断的事实：这份内容是不是新的。是拷贝还是重跑后逐字节相同，登记册分不出来，
+# 所以不写“拷贝”；但“本层没有产生新的内容”在任何情况下都成立。
+def origin_text(origin, path_shown=None):
+    """交付来源的人读一句话。path_shown：页面上已经显示过的路径，相同就不再重复一遍。"""
+    if not isinstance(origin, dict) or not origin.get("kind"):
+        return ""
+    if origin.get("note"):
+        return origin["note"]
+    kind = origin["kind"]
+    at = origin.get("at") or ""
+    path = origin.get("path") or ""
+    if not at:
+        where = ""
+    elif not path or path == path_shown:
+        where = f"（该内容 {at} 已登记）"
+    else:
+        where = f"（该内容 {at} 已登记为 {path}）"
+    if kind == "own":
+        return f"本层工作期间首次登记的内容{where}"
+    head = {"upstream": "与上游登记的文件内容相同",
+            "input": "与输入文件内容相同",
+            "preexisting": "本包建立前就已登记的内容"}.get(kind, "")
+    return f"{head}{where}——本层没有产生新的内容"
+
+
+def comparison_text(e):
+    """一条测试到底比的是什么，写成一句话。没记录就如实说没记录。"""
+    comp = e.get("comparison") if isinstance(e.get("comparison"), dict) else None
+    if comp and (comp.get("under_test") or comp.get("reference")):
+        s = f"拿「{comp.get('under_test') or '（未写被测对象）'}」和「{comp.get('reference') or '（未写参照）'}」比"
+        if comp.get("stimulus"):
+            s += f"，激励：{comp['stimulus']}"
+    else:
+        s = "比较对象没有记录（拿什么和什么比）"
+    if e.get("control"):
+        s += f"；对照组：{e['control']}"
+    else:
+        s += "；对照组：未记录"
+    if e.get("intervention"):
+        s += f"；干预：{e['intervention']}"
+    return s
+
+
+CRIT_ID = re.compile(r"^[A-Z][A-Z0-9]{0,5}-\d{1,3}$")
+
+
+def _criteria_of(env):
+    """包里登记的判据：L3 的 acceptance_criteria、L7 的 preregistered_criteria。
+    统一成 [{id, text}]。键是判据编号（如 BR-1）；值是文字，或带 criterion/text/statement 的对象；
+    判据也可能按类再分一层（L3：bottleneck_resolution → BR-1）。"""
+    p = env.get("payload") or {}
+    out = []
+
+    def _take(cid, val):
+        text = val if isinstance(val, str) else ""
+        if isinstance(val, dict):
+            text = str(val.get("criterion") or val.get("text") or val.get("statement") or "")
+        if CRIT_ID.match(str(cid)) and text.strip():
+            out.append({"id": str(cid), "text": text.strip()})
+
+    for key in ("acceptance_criteria", "preregistered_criteria", "criteria"):
+        obj = p.get(key)
+        if not isinstance(obj, dict):
+            continue
+        for cid, val in obj.items():
+            if isinstance(val, dict) and not CRIT_ID.match(str(cid)):
+                for cid2, val2 in val.items():
+                    _take(cid2, val2)
+            else:
+                _take(cid, val)
+    return out
+
+
+def _criteria_lines(w, env, pkg_index, evidence):
+    """判据来源：上游定下的判据原文，对照本页登记的同编号测试。
+
+    只按编号对应并列出两边的原文——编号相同不代表内容相同（L3 的 BR-3 和 L7 的 BR-3
+    可以是两回事），要让人自己对照。上游判据不测的，本层在 payload.waived_criteria 写明理由。
+    """
+    parent_ids = list((env.get("provenance") or {}).get("parent_package_refs") or [])
+    _, ancestors = _ancestor_artifacts(w, parent_ids, pkg_index)
+    if not ancestors:
+        return []
+    tests = [e for e in evidence if e.get("kind") == "test"]
+    waived = (env.get("payload") or {}).get("waived_criteria")
+    waived = waived if isinstance(waived, dict) else {}
+    rows, seen = [], set()
+    for anc in ancestors:
+        layer = anc["identity"]["layer_id"]
+        for c in _criteria_of(anc):
+            key = (anc["identity"]["package_id"], c["id"])
+            if key in seen:
+                continue
+            seen.add(key)
+            pat = re.compile(rf"(?<![A-Za-z0-9-]){re.escape(c['id'])}(?![A-Za-z0-9])")
+            same = [t for t in tests
+                    if pat.search(f"{t.get('title') or ''} {t.get('proposition') or ''}")]
+            rows.append({"id": c["id"], "text": _s(c["text"], 200),
+                         "from_pkg": anc["identity"]["package_id"], "from_layer": layer,
+                         "tests": [{"id": t["id"], "title": _s(t.get("title"), 80),
+                                    "verdict": t.get("verdict"), "package_ref": t.get("package_ref", "")}
+                                   for t in same],
+                         "waived": _s(waived.get(c["id"]), 200) if waived.get(c["id"]) else ""})
+    return rows
+
+
+def _report_scope_text(card):
+    scope = ((card.get("state") or {}).get("scope") or {})
+    if not scope.get("checked"):
+        return ""
+    return "- 核对了：" + "、".join(scope["checked"]) + "。没有核对：" + "、".join(scope["unchecked"]) + "。"
+
+
+def _report_file_line(card, a):
+    """报告里的文件行：路径、类型、编号，加上这份内容是哪来的。"""
+    org = next((x.get("origin") for x in card.get("evidence", [])
+                if x.get("id") == a.get("artifact_id")), None)
+    shown = a.get('uri') or a.get('artifact_id')
+    line = f"- `{shown}`（{a.get('artifact_type')}，{a.get('artifact_id')}）"
+    text = origin_text(org, path_shown=shown)
+    return line + (f"——{text}" if text else "")
 
 
 def _report_sign_text(card):
@@ -2546,6 +2737,7 @@ def _l2_report_markdown(w, env):
         f"- 所属：{(task or {}).get('task_id', '—')} / {(it or {}).get('iteration_id', '—')}",
         f"- 状态：{card['state']['word']}（{card['state']['why']}）",
         f"- 核对：{card['state']['verdict']}；签字：{_report_sign_text(card)}",
+        _report_scope_text(card),
         f"- 任务目标（原话）：{goal or '—'}",
         "",
         "## 这一层回答的问题",
@@ -2612,6 +2804,7 @@ def _l2_report_markdown(w, env):
         seen_tests.add(key)
         lines.append(f"- {t.get('id')} {t.get('title')}：{t.get('verdict')}（{t.get('strength') or '—'}）"
                      + (f"；运行证据 {t.get('raw')}" if t.get("raw") else ""))
+        lines.append(f"  - {comparison_text(t)}")
     if not tests:
         lines.append("（还没有登记测试）")
     lines += ["", "## 适用边界"]
@@ -2628,7 +2821,7 @@ def _l2_report_markdown(w, env):
     for a in env.get("artifacts") or []:
         if a.get("role") == "layer-report":
             continue
-        lines.append(f"- `{a.get('uri') or a.get('artifact_id')}`（{a.get('artifact_type')}，{a.get('artifact_id')}）")
+        lines.append(_report_file_line(card, a))
     if not env.get("artifacts"):
         lines.append("（无）")
     lines += ["", "---", "本报告由平台根据本包 payload、接口卡与登记证据确定性生成；"
@@ -2651,6 +2844,7 @@ def _l3_report_markdown(w, env):
         f"- 所属：{(task or {}).get('task_id', '—')} / {(it or {}).get('iteration_id', '—')}",
         f"- 状态：{card['state']['word']}（{card['state']['why']}）",
         f"- 核对：{card['state']['verdict']}；签字：{_report_sign_text(card)}",
+        _report_scope_text(card),
         f"- 任务目标（原话）：{goal or '—'}",
         "",
         "## 这一层回答的问题",
@@ -2725,7 +2919,7 @@ def _l3_report_markdown(w, env):
     for a in env.get("artifacts") or []:
         if a.get("role") == "layer-report":
             continue
-        lines.append(f"- `{a.get('uri') or a.get('artifact_id')}`（{a.get('artifact_type')}，{a.get('artifact_id')}）")
+        lines.append(_report_file_line(card, a))
     if not env.get("artifacts"):
         lines.append("（无）")
     lines += ["", "---", "本报告由平台根据本包 payload、接口卡与登记证据确定性生成；"
@@ -2749,6 +2943,7 @@ def _l4_report_markdown(w, env):
         f"- 所属：{(task or {}).get('task_id', '—')} / {(it or {}).get('iteration_id', '—')}",
         f"- 状态：{card['state']['word']}（{card['state']['why']}）",
         f"- 核对：{card['state']['verdict']}；签字：{_report_sign_text(card)}",
+        _report_scope_text(card),
         f"- 任务目标（原话）：{goal or '—'}",
         "",
         "## 这一层回答的问题",
@@ -2816,12 +3011,13 @@ def _l4_report_markdown(w, env):
     if tests:
         for t in tests:
             lines.append(f"- 测试 {t.get('id')} {t.get('title')}：{t.get('verdict')}")
+            lines.append(f"  - {comparison_text(t)}")
     else:
         lines.append("- 本层不要求登记测试。")
     for a in env.get("artifacts") or []:
         if a.get("role") == "layer-report":
             continue
-        lines.append(f"- `{a.get('uri') or a.get('artifact_id')}`（{a.get('artifact_type')}，{a.get('artifact_id')}）")
+        lines.append(_report_file_line(card, a))
     lines += ["", "---", "本报告由平台根据本包 contract_manifest、payload、接口卡与登记证据确定性生成；"
               "内容以包内原始记录为准。"]
     return "\n".join(lines) + "\n"
@@ -2926,6 +3122,7 @@ def _generic_layer_report_markdown(w, env):
         f"- 所属：{(task or {}).get('task_id', '—')} / {(it or {}).get('iteration_id', '—')}",
         f"- 状态：{card['state']['word']}（{card['state']['why']}）",
         f"- 核对：{card['state']['verdict']}；签字：{_report_sign_text(card)}",
+        _report_scope_text(card),
         f"- 任务目标（原话）：{goal or '—'}",
         "",
         "## 这一层回答的问题",
@@ -3025,12 +3222,13 @@ def _generic_layer_report_markdown(w, env):
             if key in seen: continue
             seen.add(key)
             lines.append(f"- 测试 {t.get('id')} {t.get('title')}：{t.get('verdict')}")
+            lines.append(f"  - {comparison_text(t)}")
     else:
         lines.append("- 本层不要求登记测试。" if layer != "L5" and layer != "L6" and layer != "L7" and layer != "L8" else "- 还没有登记测试。")
     for a in env.get("artifacts") or []:
         if a.get("role") in ("layer-report", "layer-delivery-machine"):
             continue
-        lines.append(f"- `{a.get('uri') or a.get('artifact_id')}`（{a.get('artifact_type')}，{a.get('artifact_id')}）")
+        lines.append(_report_file_line(card, a))
     lines += ["", "---", "本报告由平台根据本包 payload、接口卡与登记证据确定性生成；"
               "内容以包内原始记录为准。"]
     return "\n".join(lines) + "\n"
@@ -3085,7 +3283,7 @@ def ensure_layer_report(w, ref, by=""):
             "machine_path": (machine or {}).get("path", "")}
 
 
-STATE_ORDER = ["已作废", "有问题", "待人决定", "未验证", "已验证", "进行中", "未开始"]
+STATE_ORDER = ["已作废", "有问题", "待人决定", "未验证", PASS_WORD, "进行中", "未开始"]
 
 
 def worst_state(words):
@@ -3221,7 +3419,7 @@ def layer_card(w, env, tasks=None, pkg_index=None):
     for p in parent_ids:
         pe = pkg_index.get(p)
         st = STATE_WORD.get(pe["lifecycle"]["status"], pe["lifecycle"]["status"]) if pe else "不存在"
-        if new_pkg and pe and st == "已验证" and iface_drifted(pe):
+        if new_pkg and pe and st == PASS_WORD and iface_drifted(pe):
             st = "核对后改过"
         parents.append((p, st))
     signed = [r for r in receipts if not r["pending"] and r.get("outcome") != "驳回"]
@@ -3241,7 +3439,7 @@ def layer_card(w, env, tasks=None, pkg_index=None):
          "detail": " · ".join(f"{name} {'✓' if ok else '✗'}" for name, ok in marks) if marks else "本层没有固定的交付项"},
         {"id": "artifacts", "label": "证据未动", "ok": (not bad_art) if refs else None,
          "detail": (f"{len(refs)} 个工件，哈希全部一致" if not bad_art else f"{len(bad_art)} 个工件未登记或哈希不一致") if refs else "没有登记工件"},
-        {"id": "upstream", "label": "上游已验证", "ok": (all(s == "已验证" for _, s in parents)) if parents else None,
+        {"id": "upstream", "label": "上游核对通过", "ok": (all(s == PASS_WORD for _, s in parents)) if parents else None,
          "detail": (" · ".join(f"{_s(p, 34)}：{s}" for p, s in parents)
                     + ("（按模板顺序推得）" if derived_up else "")) if parents else "无上游"},
         {"id": "human", "label": "有人签字", "ok": bool(signed_now) if guide.get("human") else None,
@@ -3290,13 +3488,32 @@ def layer_card(w, env, tasks=None, pkg_index=None):
     elif verdict == "pass" and lc == "passed" and drift:
         word, why = "未验证", "接口卡在上次核对之后改过，需要重新核对"
     elif verdict == "pass" and lc == "passed":
-        word, why = "已验证", f"核对通过（{(v.get('gated_at') or '')[:16].replace('T', ' ')}）"
+        n_ok = sum(1 for c in checks if c["ok"] is not None)
+        word, why = PASS_WORD, f"{(v.get('gated_at') or '')[:16].replace('T', ' ')} 核对，{n_ok} 项全过"
     elif lc == "draft" and not iface.get("gives"):
         word, why = "未开始", "还没有产出"
     elif lc == "draft":
         word, why = "进行中", "已有产出，还没核对"
     else:
         word, why = "进行中", f"{STATE_WORD.get(lc, lc)}，还没核对通过"
+    # ---- 证据清单与判据来源 ----
+    ancestor_arts, _ = _ancestor_artifacts(w, parent_ids, pkg_index)
+    evidence = _evidence_lines(w, env, iface, ancestor_arts, is_root=not parent_ids)
+
+    # ---- 核对范围：这次核对查了什么、没查什么（状态词不能替人下结论，范围要写出来） ----
+    checked = ["交付项齐全", "登记的证据没有被改动"]
+    if parents:
+        checked.append("上游已核对通过")
+    if new_pkg:
+        checked.append("接口卡格式与引用（标「实测」的结论指向已登记的测试）")
+    if guide.get("needs_test"):
+        checked.append("有登记在册且通过的测试")
+    if guide.get("human"):
+        checked.append("有人签字")
+    scope = {"checked": checked,
+             "unchecked": ["结论内容本身是否成立",
+                           "测试是否独立且真有区分力",
+                           "交付是否为本层产出（只在交付栏标注来源，不拦截）"]}
     return {
         "package_id": pid, "layer": layer, "layer_name": guide.get("name", ""),
         "title": ident.get("title", ""), "owner": ident.get("owner_agent", ""),
@@ -3305,7 +3522,7 @@ def layer_card(w, env, tasks=None, pkg_index=None):
         "iteration_label": it.get("label") if it else None,
         "goal": (task.get("goal") or {}).get("statement", "") if task else "",
         "intent": _s((env.get("design_spec") or {}).get("intent"), 200),
-        "state": {"word": word, "why": why, "lifecycle": lc, "verdict": verdict},
+        "state": {"word": word, "why": why, "lifecycle": lc, "verdict": verdict, "scope": scope},
         "guide": {"question": guide.get("question", ""), "role": guide.get("role", ""),
                   "role_label": ROLE_LABEL.get(guide.get("role", ""), guide.get("role", "")),
                   "skills": guide.get("skills", []), "consumes": guide.get("consumes", ""),
@@ -3319,7 +3536,8 @@ def layer_card(w, env, tasks=None, pkg_index=None):
         "runs": (env.get("provenance") or {}).get("runs", []),
         "checks": checks, "checked_at": v.get("gated_at", ""), "gate_report": v.get("gate_report", ""),
         "receipts": receipts,
-        "evidence": _evidence_lines(w, env, iface),
+        "evidence": evidence,
+        "criteria": _criteria_lines(w, env, pkg_index, evidence) if guide.get("needs_test") else [],
         "reproduce_command": _s((env.get("payload") or {}).get("reproduce_command"), 400),
         "parents": parent_ids,
         "parents_derived": derived_up,
@@ -3328,7 +3546,7 @@ def layer_card(w, env, tasks=None, pkg_index=None):
     }
 
 
-STATE_WORD = {"passed": "已验证", "failed": "有问题", "rejected": "已否决", "invalidated": "已作废",
+STATE_WORD = {"passed": PASS_WORD, "failed": "有问题", "rejected": "已否决", "invalidated": "已作废",
               "superseded": "已作废", "needs_decision": "待人决定", "unresolved": "未验证",
               "draft": "未开始", "ready": "未开始", "running": "进行中", "validating": "进行中"}
 
@@ -3348,7 +3566,7 @@ def _print_card(w, env):
     print(f"- 回答的问题：{g['question']}")
     print(f"- 由谁做：{g['role_label']}｜纪律：{'、'.join(g['skills'])}")
     print(f"- 输入：{g['consumes']}｜必须交出：{g['produces']}")
-    print(f"- 怎样算已验证：{'需要人签字；' if g['human'] else ''}{'需要登记在册的测试通过' if g['needs_test'] else '不要求测试'}")
+    print(f"- 怎样算核对通过：{'需要人签字；' if g['human'] else ''}{'需要登记在册的测试通过' if g['needs_test'] else '不要求测试'}")
     print(f"\n## 目标（不变量）\n{c['goal'] or '（未归到任务）'}")
     print(f"\n## 交付（交给下游的结论）" + ("　［没有接口卡：从现有字段摘录］" if iface.get("derived") else ""))
     print(f"- 本层要回答的问题：{iface.get('question') or '—'}")
@@ -3372,9 +3590,13 @@ def _print_card(w, env):
         if e["kind"] == "test":
             shown = True
             print(f"- 测试 {e['title']}：{e.get('verdict')}（{e.get('strength')}）" + (f" → {'、'.join(e['for_statement'])}" if e.get("for_statement") else ""))
+            print(f"  {comparison_text(e)}")
         elif e.get("cited"):
             shown = True
             print(f"- 工件 {e['id']}（{e.get('artifact_type')}，哈希 {e.get('hash')}）：{e.get('path') or e.get('title')}")
+            org = origin_text(e.get("origin"))
+            if org:
+                print(f"  来源：{org}")
     if not shown:
         print("- （没有被结论引用的登记证据）")
     if c["reproduce_command"]:
@@ -3405,7 +3627,7 @@ def cmd_card(w, args):
 
 
 def cmd_guide(w, args):
-    print("每一层回答什么、由谁做、必须交出什么、怎样算已验证（界面与 wf brief 共用这一份）")
+    print("每一层回答什么、由谁做、必须交出什么、怎样算核对通过（界面与 wf brief 共用这一份）")
     for L in ("L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"):
         if getattr(args, "layer", None) and args.layer != L:
             continue
@@ -3419,7 +3641,7 @@ def cmd_guide(w, args):
         print(f"  可写：{'；'.join(a_sum['writes'])}")
         print(f"  输入：{g['consumes']}｜必须交出：{g['produces']}")
         print(f"  交付项：{'、'.join(n for n, _ in g['deliverables'])}")
-        print(f"  怎样算已验证：{'需要人签字；' if g['human'] else '不需要人签字；'}"
+        print(f"  怎样算核对通过：{'需要人签字；' if g['human'] else '不需要人签字；'}"
               f"{'需要登记在册的测试通过' if g['needs_test'] else '不要求测试'}")
     print("\n层接口卡（每个层包交给下游的内容，五个字段）：")
     print('  {"question": "本层要回答的问题（≤120 字）",')
@@ -3720,12 +3942,12 @@ def _print_brief(w, args):
     print(f"- 回答的问题：{guide['question']}")
     print(f"- 由谁做：{a['name']}（{guide['role_label']}）｜纪律：{'、'.join(guide['skills'])}")
     print(f"- 输入：{guide['consumes']}｜必须交出：{guide['produces']}")
-    print(f"- 怎样算已验证：{'需要人签字；' if guide['human'] else ''}"
+    print(f"- 怎样算核对通过：{'需要人签字；' if guide['human'] else ''}"
           f"{'需要登记在册的测试通过' if guide['needs_test'] else '不要求测试'}")
     parents = env.get("provenance", {}).get("parent_package_refs", [])
     if parents:
         # 下游拿到的是上游的接口卡（结论 / 真值 / 证据 / 留给下游的问题），不是上游的全文
-        print("\n## 上游交给本层的信息（接口卡；只可消费已验证的上游）")
+        print("\n## 上游交给本层的信息（接口卡；只可消费核对通过的上游）")
         for pid in parents:
             pe = by_id.get(pid)
             if not pe:
@@ -4440,7 +4662,11 @@ def cmd_selftest(w, args):
 
 def cmd_approve(w, args):
     _refuse_layer_action("批准")
-    new, affected = w.resolve_decision(args.dec, getattr(args, "as"), reject=False, reason=args.note)
+    # 批准要留判断：只记「谁点的」看不出人核对了什么，签过等于没签
+    note = (getattr(args, "note", "") or "").strip()
+    if not note:
+        raise SystemExit("错误：--note 必填——用一句话写明你核对了什么")
+    new, affected = w.resolve_decision(args.dec, getattr(args, "as"), reject=False, reason=note)
     print(f"{new['decision_id']} 已由 {getattr(args, 'as')} 批准（supersedes {args.dec}）")
     for pid in affected:
         verdict, _ = w.gate(pid)
@@ -4677,7 +4903,7 @@ def cmd_state_export(w, args):
                 reached = reached or (L == "L8" and any(
                     e["lifecycle"]["status"] == "passed" for e in own))
             # 模板节点（流程编排里的「框」）按模板顺序排列：每个框列出本轮自有的包或沿用的包。
-            # 本轮完成 = 每个框都已验证——完成与否只由模板决定，没有另写的成功判据
+            # 本轮完成 = 每个框都核对通过——完成与否只由模板决定，没有另写的成功判据
             tpl = it.get("flow_template") or t.get("flow_template") or default_template()
             nodes = []
             for nd in template_nodes(w, t, it):
@@ -4696,8 +4922,8 @@ def cmd_state_export(w, args):
                 "started_at": it.get("started_at", ""),
                 "flow_template": tpl,
                 "nodes": nodes,
-                "complete": bool(nodes) and all(n["state"] == "已验证" for n in nodes),
-                "frontier": next((n["layer"] for n in nodes if n["state"] != "已验证"), None),
+                "complete": bool(nodes) and all(n["state"] == PASS_WORD for n in nodes),
+                "frontier": next((n["layer"] for n in nodes if n["state"] != PASS_WORD), None),
                 "reached_l8": reached,
                 "pending_decisions": sum(
                     1 for d in pending if own_ids & set(dec_to_pkg.get(d["decision_id"], []))),
@@ -4731,7 +4957,7 @@ def cmd_state_export(w, args):
         # 0.3：+tasks（任务→迭代，含 goal / benchmark / 逐层自有与沿用）；包条目 +task_id/iteration_id；
         #      默认前沿只看进行中的迭代。0.2：+store_root/store_isolated；域过滤贯穿 DAG 与待批；
         #      节点 +title、+dangling_ref
-        "schema_version": "0.5",
+        "schema_version": "0.6",
         "generated_at": now(),
         "generated_by": "wf state-export",
         "store_env_hash": _store_env_hash(w),
@@ -5375,7 +5601,7 @@ def _signer_or_pending(args):
 
 def cmd_task_new(w, args):
     """立项：标题 + 目标（不变量）+ benchmark + 流程模板。写成任务记录与章程决策。
-    没有成功判据：任务长什么样、怎样算完成，只由流程模板决定（本轮每个框都已验证）。"""
+    没有成功判据：任务长什么样、怎样算完成，只由流程模板决定（本轮每个框都核对通过）。"""
     title = (args.title or "").strip()
     statement = (args.goal or "").strip()
     if not title or not statement:
@@ -6058,7 +6284,7 @@ def build_parser():
     s = sub.add_parser("approve", help="批准一条待批决策（追加 ratify + supersedes，不改历史）")
     s.add_argument("dec", help="DEC-…")
     s.add_argument("--as", dest="as", required=True, help="批准人署名")
-    s.add_argument("--note", default="")
+    s.add_argument("--note", required=True, help="核对了什么（一句话，必填）：回执记下人的判断")
     s.set_defaults(fn=cmd_approve)
 
     s = sub.add_parser("reject", help="驳回一条待批决策")
@@ -6176,7 +6402,7 @@ def build_parser():
     s.add_argument("pkg", help="PKG-…")
     s.set_defaults(fn=cmd_card)
 
-    s = sub.add_parser("guide", help="每一层回答什么、由谁做、必须交出什么、怎样算已验证；层接口卡骨架")
+    s = sub.add_parser("guide", help="每一层回答什么、由谁做、必须交出什么、怎样算核对通过；层接口卡骨架")
     s.add_argument("layer", nargs="?", default=None, help="只看某一层（L1…L8）")
     s.set_defaults(fn=cmd_guide)
 

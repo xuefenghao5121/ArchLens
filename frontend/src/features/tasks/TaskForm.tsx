@@ -8,7 +8,7 @@ import { useOperator } from './useOperator'
 import './tasks.css'
 
 /** 新建任务：标题 + 目标 + benchmark + 流程模板（+ 章程署名，选填）。
- *  没有成功判据：怎样算完成只由流程模板决定——本轮每个框都已验证。 */
+ *  没有成功判据：怎样算完成只由流程模板决定——本轮每个框都核对通过。 */
 export default function TaskForm({ onClose, onCreated }: {
   onClose: () => void
   onCreated: (taskId: string, iterationId: string | null) => void
@@ -85,7 +85,7 @@ export default function TaskForm({ onClose, onCreated }: {
         </div>
         <p className="tf-sub">
           任务只需要三样：一句目标、在什么负载上做、走哪条流程。目标写原话——之后每一层看到的都是这同一句。
-          怎样算完成由流程决定：本轮每个框都已验证。不填「章程署名」则先记为待人决定，批准后任务才开始。
+          怎样算完成由流程决定：本轮每个框都核对通过。不填「章程署名」则先记为待人决定，批准后任务才开始。
         </p>
 
         <label className="tf-row">

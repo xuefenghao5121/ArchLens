@@ -706,7 +706,11 @@ def _h_approve(w, wfmod, p):
     if not dec:
         raise SystemExit("approve 需要 dec 参数")
     user = _signer(p, "approve")
-    new, affected = w.resolve_decision(dec, user, reject=False, reason=p.get("note", ""))
+    # 批准要留判断：只记「谁点的」看不出人核对了什么，签过等于没签
+    note = str(p.get("note") or "").strip()
+    if not note:
+        raise SystemExit("approve 需要批注（note）：用一句话写明你核对了什么")
+    new, affected = w.resolve_decision(dec, user, reject=False, reason=note)
     verdicts = [w.gate(pid, verbose=False)[0] for pid in affected]
     return {"decision_id": new["decision_id"], "supersedes": dec, "signed_by": user,
             "affected": affected, "regate_verdicts": verdicts}

@@ -30,6 +30,39 @@ const basename = (p?: string) => (p ? p.split('/').pop() ?? p : '')
 /** 包号只显示层号，避免在结论行里铺一长串 PKG-... */
 export const pkgShort = (p?: string) => (p ? p.replace(/^PKG-(L\d+)-.*$/, '$1') : '')
 
+/** 交付来源的人读一句话。与后端 origin_text 同一措辞；pathShown 是页面上已显示过的路径，相同就不再重复。 */
+export function originText(o: EvidenceLine['origin'], pathShown?: string): string {
+  if (!o?.kind) return ''
+  if (o.note) return o.note
+  const at = o.at ?? ''
+  const path = o.path ?? ''
+  const where = !at ? ''
+    : (!path || path === pathShown) ? `（该内容 ${at} 已登记）`
+    : `（该内容 ${at} 已登记为 ${path}）`
+  if (o.kind === 'own') return `本层工作期间首次登记的内容${where}`
+  const head = { upstream: '与上游登记的文件内容相同', input: '与输入文件内容相同', preexisting: '本包建立前就已登记的内容' }[o.kind]
+  return `${head}${where}——本层没有产生新的内容`
+}
+
+/** 一条测试比的是什么，写成一句话。没记录就如实说没记录。 */
+export function comparisonText(e: EvidenceLine): string {
+  const c = e.comparison
+  let s: string
+  if (c && (c.under_test || c.reference)) {
+    s = `拿「${c.under_test || '（未写被测对象）'}」和「${c.reference || '（未写参照）'}」比`
+    if (c.stimulus) s += `，激励：${c.stimulus}`
+  } else {
+    s = '比较对象没有记录（拿什么和什么比）'
+  }
+  s += e.control ? `；对照组：${e.control}` : '；对照组：未记录'
+  if (e.intervention) s += `；干预：${e.intervention}`
+  return s
+}
+
+/** 结论行里的短标记：比的是什么没记录时，让人一眼看到 */
+export const comparisonFlag = (e: EvidenceLine) =>
+  e.comparison && (e.comparison.under_test || e.comparison.reference) ? '' : ' · 比的是什么没记录'
+
 /** 工件类型的人话；文件名能更具体说明用途时优先用文件名判断。 */
 export function artifactPurpose(type?: string, path?: string): string {
   const n = basename(path).toLowerCase()
@@ -83,7 +116,7 @@ export function GiveRow({ g, ev, truth, frames, idx, onOpenArtifact }: {
               return (
                 <span key={id} className="give-ev-item">
                   {e.kind === 'test'
-                    ? `${e.package_ref ? `来自 ${pkgShort(e.package_ref)} · ` : ''}测试「${e.title}」：${verdictWord(e.verdict)}（${e.strength ?? '—'}）`
+                    ? `${e.package_ref ? `来自 ${pkgShort(e.package_ref)} · ` : ''}测试「${e.title}」：${verdictWord(e.verdict)}（${e.strength ?? '—'}）${comparisonFlag(e)}`
                     : `工件 ${basename(e.path) || id}（${artifactPurpose(e.artifact_type, e.path)}，哈希 ${e.hash ?? '—'}）`}
                 </span>
               )

@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import type { FlowNode, LayerCard, LayerPackageView } from '../../types'
 import { FRAME_LABEL, TRUTH_LABEL, fmtTime } from '../../status'
-import { GiveRow, verdictWord } from '../shared/Give'
+import { GiveRow, comparisonText, originText, verdictWord } from '../shared/Give'
 import { EmptyState, PageErr, PageLoad, StateChip, StateLegend } from '../shared/ui'
 import { flowHref, layerHref, useWork } from '../tasks/useWork'
 import WorkPicker from '../tasks/WorkPicker'
@@ -128,12 +128,16 @@ function LayerBlock({ node, pkgOf, reusedOf, truth, frames, dead }: {
                       {e.executor ? `${e.executor} · ` : ''}{fmtTime(e.at)} · {e.id}
                       {e.for_statement && e.for_statement.length ? ` · 支撑 ${e.for_statement.join('、')}` : ''}
                     </div>
+                    <div className="ev-k ev-compare">{comparisonText(e)}</div>
                   </>
                 ) : (
                   <>
                     <div><span className="ev-k">工件 </span><span className="mono">{e.id}</span> <span className="ev-k">{e.artifact_type}</span></div>
                     <div className="ev-k mono ev-path">{e.path || ''}</div>
                     {e.hash && <div className="ev-k">哈希 {e.hash}{e.cited === false ? ' · 没有被结论引用' : ''}</div>}
+                    {e.origin?.kind && e.origin.kind !== 'own' && (
+                      <div className="ev-k ev-origin">{originText(e.origin, e.path)}</div>
+                    )}
                   </>
                 )}
               </div>

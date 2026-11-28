@@ -142,7 +142,14 @@ def _tool_schemas(layer):
                                "metric": {"type": "string"}, "predicted_direction": {"type": "string"},
                                "failure_condition": {"type": "string"}, "validity_scope": {"type": "string"},
                                "strength": {"type": "string", "enum": ["V1", "V2", "V3"]},
-                               "control": {"type": "string"}, "intervention": {"type": "string"},
+                               "control": {"type": "string", "description": "对照组：用什么证明这个测试能区分对错（如：未修复版同激励出现 N 处差异）"},
+                               "intervention": {"type": "string"},
+                               "comparison": {"type": "object",
+                                              "description": "这条测试比的是什么。页面会原样写成一句话给人看。",
+                                              "properties": {
+                                                  "under_test": {"type": "string", "description": "被测对象（哪个文件/版本）"},
+                                                  "reference": {"type": "string", "description": "参照对象（和谁比）"},
+                                                  "stimulus": {"type": "string", "description": "在什么激励/输入下比"}}},
                                "run_artifact": {"type": "string", "description": "运行证据文件（仓库相对路径）"},
                                "verdict": {"type": "string", "enum": ["pass", "fail", "unresolved", "not_applicable"]},
                                "measured": {"type": "object"}, "notes": {"type": "string"},
@@ -604,6 +611,10 @@ def _tool_test_register(job, args, w):
         "package_ref": job["package_id"],
         "created_by": job.get("agent", ""),
     }
+    comp = args.get("comparison")
+    if isinstance(comp, dict) and any(str(v or "").strip() for v in comp.values()):
+        defn["comparison"] = {k: str((comp.get(k) or "")).strip()
+                             for k in ("under_test", "reference", "stimulus") if str(comp.get(k) or "").strip()}
     try:
         td = w.add_test_def(defn)
     except SystemExit as e:
@@ -873,7 +884,8 @@ LAYER_HINTS = {
     "L4": "把方案固化成 contract_manifest（接口/时序/语义）和带 verification 三态的资源参数。",
     "L5": "按契约实现 RTL 与独立 testbench；先写 golden/参考模型再写实现；登记 RTL/testbench 和 pass 测试。",
     "L6": "把 RTL 映射成仿真对象与事件；写 simobject_mappings；跑协议/背压/复位/顺序测试并登记 pass 测试。",
-    "L7": "造可复现实验包：entry_refs/scripts、environment、逐字可跑的 reproduce_command；跑测量并登记 pass 测试。",
+    "L7": "造可复现实验包：entry_refs/scripts、environment、逐字可跑的 reproduce_command；跑测量并登记 pass 测试。"
+          "上游（L3）定的判据要逐条对应到测试，编号沿用上游的；不测的写进 payload.waived_criteria 并给理由。",
     "L8": "把测量收成结论：model_causal_status、hardware_evidence_status、comparisons.frame、validity_scope；登记 pass 测试。",
 }
 
@@ -902,6 +914,8 @@ def _system_prompt(w, job):
         extras.append("- L4 的 contract_manifest 用 wf_contract_patch 写，不放在 payload。")
     if layer in wf.REQUIRES_TEST_EVIDENCE:
         extras.append("- 本层必须有登记在册且 verdict=pass 的 RES 测试；用 wf_test_register（给 run_artifact）。")
+        extras.append("- wf_test_register 如实填 comparison（under_test / reference / stimulus）与 control：拿什么和什么比、"
+                      "在什么激励下、对照组是什么。页面会原样写成一句话给人看；拿一份文件和它自己的拷贝比，不算验证。")
     else:
         extras.append("- 可选：有真实测量就用 wf_test_register 登记测试与 RES。")
     return f"""你是「{agent.get('name', layer)}」（{layer} 层 {guide.get('name', '')}），在平台内部做本层工作。

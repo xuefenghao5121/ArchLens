@@ -23,11 +23,11 @@ export const STATE_META: Record<StateWord, { color: string; meaning: string }> =
   待人决定: { color: '#fbbf24', meaning: '需要你签字或做决定，做完才能交给下游' },
   未验证: { color: '#fb923c', meaning: '缺验证：没有通过的测试，或核对之后内容又改过' },
   有问题: { color: '#f87171', meaning: '核对没通过，原因写在核对回执里' },
-  已验证: { color: '#34d399', meaning: '核对通过，下游可以用它交出的结论' },
+  核对通过: { color: '#34d399', meaning: '平台的核对项全过：交付、登记证据、上游状态、测试登记、签字。不等于结论内容已被证实' },
   已作废: { color: '#64748b', meaning: '这一层的结论作废，不再传给下游' },
 }
 
-export const STATE_ORDER: StateWord[] = ['未开始', '进行中', '待人决定', '未验证', '有问题', '已验证', '已作废']
+export const STATE_ORDER: StateWord[] = ['未开始', '进行中', '待人决定', '未验证', '有问题', '核对通过', '已作废']
 
 export const TASK_STATUS_META: Record<TaskStatus, { label: string; color: string }> = {
   draft: { label: '章程待批', color: '#fbbf24' },

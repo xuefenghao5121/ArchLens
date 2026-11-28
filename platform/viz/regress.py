@@ -256,7 +256,7 @@ def run(ctx: Ctx):
         ctx.wf("task-archive", "--task", tid, "--restore")
     print("（沙箱夹具：已恢复真实 store 里归档的两个历史任务，供下面沿用 / 折叠 / 待批的用例使用）")
     LAYERS = ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"]
-    STATE_WORDS = {"未开始", "进行中", "待人决定", "未验证", "有问题", "已验证", "已作废"}
+    STATE_WORDS = {"未开始", "进行中", "待人决定", "未验证", "有问题", "核对通过", "已作废"}
 
     def pkg_of(state, pkg):
         return next(p for L in LAYERS for p in state["layers"][L]["packages"] if p["package_id"] == pkg)
@@ -333,7 +333,7 @@ def run(ctx: Ctx):
               all("package_ids" in d and "task_id" in d and "summary" in d and "headline" in d
                   for d in s["pending_decisions"]))
     ctx.check("store 信息如实暴露",
-              s["store_isolated"] is True and s["store_root"] == str(ctx.root) and s["schema_version"] == "0.5")
+              s["store_isolated"] is True and s["store_root"] == str(ctx.root) and s["schema_version"] == "0.6")
     ctx.check("幽灵 ID 标为 dangling_ref，不冒充层包",
               any(n["kind"] == "dangling_ref" for n in sme2["dag"]["nodes"])
               and not any(n["kind"] == "layer_package" and n["layer"] is None for n in sme2["dag"]["nodes"]))
@@ -440,7 +440,7 @@ def run(ctx: Ctx):
         pend = any(r["pending"] for r in c["receipts"])
         if w_ not in STATE_WORDS:
             bad.append((p["package_id"], "非法状态词"))
-        if (w_ == "已验证") != (p["lifecycle"] == "passed" and p["gate_verdict"] == "pass" and not pend):
+        if (w_ == "核对通过") != (p["lifecycle"] == "passed" and p["gate_verdict"] == "pass" and not pend):
             bad.append((p["package_id"], w_))
         if pend and w_ != "待人决定":
             bad.append((p["package_id"], "有待批事项却不是待人决定"))
@@ -450,8 +450,8 @@ def run(ctx: Ctx):
             bad.append((p["package_id"], "卡片缺核对回执 / 接口卡 / 层说明"))
     ctx.check("30 个包：状态词与 核对结论 / 待人决定 / 作废 一致，卡片字段齐全", not bad, str(bad)[:300])
     dist = collections.Counter(p["state"] for p in allp)
-    ctx.check("状态分布 19 已验证 / 7 待人决定 / 3 未开始 / 1 进行中",
-              dist == {"已验证": 19, "待人决定": 7, "未开始": 3, "进行中": 1}, str(dist))
+    ctx.check("状态分布 19 核对通过 / 7 待人决定 / 3 未开始 / 1 进行中",
+              dist == {"核对通过": 19, "待人决定": 7, "未开始": 3, "进行中": 1}, str(dist))
     l8c = pkg_of(s, "PKG-L8-cvfpu-cast-overflow-conclusion")["card"]
     ctx.check("签了字但没重新核对：进行中——已有人签字，还没重新核对（不再说「等人签字」）",
               l8c["state"]["word"] == "进行中" and l8c["state"]["why"] == "已有人签字，还没重新核对"
@@ -487,7 +487,15 @@ def run(ctx: Ctx):
     st, j = ctx.post({"action": "approve", "dec": D, "as": "pending-user"})
     ctx.check("署名=pending-user 的批准 → 被拒", not j.get("ok"))
     st, j = ctx.post({"action": "approve", "dec": D, "as": "评测者A"})
-    ctx.check("正常署名批准成功", j.get("ok") and j["result"]["signed_by"] == "评测者A", str(j)[:80])
+    ctx.check("批准不写批注 → 被拒（只记「谁点的」看不出核对了什么）",
+              not j.get("ok") and "批注" in str(j.get("error")), str(j)[:160])
+    NOTE = "看过接口卡 S1–S3 与登记测试，三条都有登记在册的依据"
+    st, j = ctx.post({"action": "approve", "dec": D, "as": "评测者A", "note": NOTE})
+    ctx.check("写明核对了什么 → 署名批准成功", j.get("ok") and j["result"]["signed_by"] == "评测者A", str(j)[:80])
+    owner = ctx.get(f"/api/package/{(j.get('result') or {}).get('affected', [''])[0]}")["card"]
+    rec_note = next((r.get("note") for r in owner["receipts"]
+                     if r.get("outcome") == "批准" and r.get("by") == "评测者A"), None)
+    ctx.check("回执原样记下人的批注", rec_note == NOTE, str(rec_note))
     st, j = ctx.post({"action": "approve", "dec": D, "as": "评测者B"})
     ctx.check("同一条决策再批一次 → 被拒", not j.get("ok"))
 
@@ -688,7 +696,7 @@ def run(ctx: Ctx):
         rc, out = ctx.wf("decide", "--task", TID, "--type", "defer", "--summary", "等 benchmark 校准",
                          "--confidence", "low", "--reviewer", "huawei", "--agent", "tester")
         ctx.check("wf decide --task：不写详细依据也行，决策挂在任务上", rc == 0 and TID in out, out[-120:])
-        st, j = ctx.post({"action": "approve", "dec": CH, "as": "评测者C"})
+        st, j = ctx.post({"action": "approve", "dec": CH, "as": "评测者C", "note": "目标、benchmark、模板都看过，与要做的事一致"})
         t_after = task_of(ctx.get("/api/state"), TID)
         ctx.check("批准章程 → 任务转 active，首轮一起 active；回执写明谁批准了章程",
                   j.get("ok") and t_after["status"] == "active" and t_after["iterations"][0]["status"] == "active"
@@ -714,7 +722,7 @@ def run(ctx: Ctx):
         ctx.check("提请之后内容改过 → 待批回执标为过期（批之前就知道内容变了）",
                   next(r for r in c["receipts"] if r["pending"])["stale"] is True)
         st, j = ctx.post({"action": "approve", "dec": next(r["decision_id"] for r in c["receipts"] if r["pending"]),
-                          "as": "评测者D"})
+                          "as": "评测者D", "note": "看过改过的接口卡"})
         ctx.check("批准旧待签 → 被拒：内容已改，旧待签不能批准新内容",
                   not j.get("ok") and "内容已改" in str(j.get("error")), str(j)[:200])
         st, j = ctx.post({"action": "validate", "pkg": L2N})
@@ -723,7 +731,7 @@ def run(ctx: Ctx):
         ctx.check("核对会按当前内容生成新待签，旧待签被移出队列",
                   j.get("ok") and (j.get("result") or {}).get("signoff_decision_id")
                   and new_pending and new_pending["stale"] is False, str(c["receipts"]))
-        st, j = ctx.post({"action": "approve", "dec": new_pending["decision_id"], "as": "评测者D"})
+        st, j = ctx.post({"action": "approve", "dec": new_pending["decision_id"], "as": "评测者D", "note": "看过当前内容的接口卡与证据"})
         c = ctx.get("/api/package/" + L2N)["card"]
         signed_now = next(r for r in c["receipts"] if not r["pending"])
         ctx.check("批准当前待签 → 回执不再过期",
@@ -791,7 +799,9 @@ def run(ctx: Ctx):
             "test_id": "TST-regress-l1-baseline", "schema_version": "2.0", "title": "回归：L1 基线可复现",
             "layer_id": "L1", "proposition": "窗口周期可复现", "metric": "cycles",
             "predicted_direction": "两次运行一致", "failure_condition": "两次运行不一致",
-            "validity_scope": "回归用", "strength": "V1"}))
+            "validity_scope": "回归用", "strength": "V1",
+            "comparison": {"under_test": "candidate.sv", "reference": "golden.sv", "stimulus": "seed 1/2"},
+            "control": "未修复版同激励两次运行不一致"}))
         (ctx.root / "run-stats.txt").write_text("seed 1 cycles 100\nseed 2 cycles 100\n")
         rc, out = ctx.wf("test-register", "--pkg", L1N, "--file", str(ctx.root / "def.json"),
                          "--run-artifact", str(ctx.root / "run-stats.txt"), "--verdict", "pass")
@@ -804,6 +814,14 @@ def run(ctx: Ctx):
         ctx.check("证据清单：测试名、结论、强度、复现所用文件",
                   any(e_["kind"] == "test" and e_["verdict"] == "pass" and e_["strength"] == "自测"
                       and e_["for_statement"] == ["S1"] for e_ in c["evidence"]), str(c["evidence"])[:200])
+        tline = next((e_ for e_ in c["evidence"] if e_["kind"] == "test"), {})
+        ctx.check("证据清单带「比的是什么」：拿什么和什么比、什么激励、对照组",
+                  tline.get("comparison") == {"under_test": "candidate.sv", "reference": "golden.sv", "stimulus": "seed 1/2"}
+                  and tline.get("control") == "未修复版同激励两次运行不一致", str(tline)[:240])
+        rc, out = ctx.wf("card", L1N)
+        ctx.check("wf card 把测试写成一句话",
+                  rc == 0 and "拿「candidate.sv」和「golden.sv」比，激励：seed 1/2；对照组：未修复版同激励两次运行不一致" in out,
+                  out[-300:])
         set_iface(L2N, {"question": "慢在哪、凭什么这么说", "takes": [{"from": L1N, "statement": "S1"}],
                         "gives": [{"id": "S1", "text": "解包流占主导", "truth": "deduced", "evidence": []}]})
         v, b = blocks(L2N)
@@ -815,8 +833,8 @@ def run(ctx: Ctx):
         st, j = ctx.post({"action": "decide", "pkg": L1N, "summary": "基线按回归口径拍定", "as": "huawei", "agent": "tester"})
         ctx.check("给 L1 记一个署名的决定", j.get("ok") and j["result"]["signed_by"] == "huawei", str(j)[:120])
         v, b = blocks(L1N)
-        ctx.check("L1 核对通过，卡片是「已验证」",
-              v == "pass" and pkg_of(ctx.get("/api/state"), L1N)["state"] == "已验证", f"{v} {b}")
+        ctx.check("L1 核对通过，卡片是「核对通过」（不再叫「已验证」：核对不查结论内容对不对）",
+              v == "pass" and pkg_of(ctx.get("/api/state"), L1N)["state"] == "核对通过", f"{v} {b}")
         v, b = blocks(L2N)
         ctx.check("L2 不再被上游拦下（轮到它自己的人签字）", not any("上游没验证完" in x for x in b) and v == "needs_decision", f"{v} {b}")
         # 核对通过之后上游改了接口卡
@@ -835,7 +853,7 @@ def run(ctx: Ctx):
                   v == "needs_decision" and pkg_of(ctx.get("/api/state"), L1N)["state"] == "待人决定", str(v))
         st, j = ctx.post({"action": "decide", "pkg": L1N, "summary": "确认改动后的基线口径", "as": "huawei", "agent": "tester"})
         v, b = blocks(L1N)
-        ctx.check("重签并重新核对 → L1 回到「已验证」", v == "pass" and pkg_of(ctx.get("/api/state"), L1N)["state"] == "已验证")
+        ctx.check("重签并重新核对 → L1 回到「核对通过」", v == "pass" and pkg_of(ctx.get("/api/state"), L1N)["state"] == "核对通过")
 
         rc, out = ctx.wf("iter-new", "--task", TID, "--reason", "换模板重开", "--create", "--as", "评测者C")
         ctx.check("上一轮还在进行中 → 不能开下一轮", rc != 0 and "先结束它" in out, out[:120])
@@ -973,8 +991,10 @@ def run(ctx: Ctx):
                   rc == 0 and r0.get("agent") == "回归员" and r0.get("model") == "glm-5.4"
                   and r0.get("duration_s") == 42, out[-120:])
 
-        rc, out = ctx.wf("approve", "DEC-nope", "--as", "x", extra_env={"WF_ACTOR": "layer:L2"})
+        rc, out = ctx.wf("approve", "DEC-nope", "--as", "x", "--note", "x", extra_env={"WF_ACTOR": "layer:L2"})
         ctx.check("层 agent 不能批准（WF_ACTOR=layer:*）", rc != 0 and "人的动作" in out, out[:120])
+        rc, out = ctx.wf("approve", "DEC-nope", "--as", "x")
+        ctx.check("wf approve 不写 --note → 拒绝", rc != 0 and "--note" in out, out[:120])
         rc, out = ctx.wf("reject", "DEC-nope", "--as", "x", "--reason", "x", extra_env={"WF_ACTOR": "layer:L2"})
         ctx.check("层 agent 不能驳回", rc != 0 and "人的动作" in out, out[:120])
         rc, out = ctx.wf("invalidate", L1N, "--reason", "x", extra_env={"WF_ACTOR": "layer:L2"})
@@ -992,8 +1012,8 @@ def run(ctx: Ctx):
         sv = ctx.get("/api/state")
         nodes = [n for t in sv["tasks"] for i in t["iterations"] for n in i["nodes"]]
         byname = {l["layer"]: l["agent"]["name"] for l in g["layers"]}
-        ctx.check("状态导出 0.5：每个框带 agent，且与定义一致",
-                  sv["schema_version"] == "0.5"
+        ctx.check("状态导出 0.6：每个框带 agent，且与定义一致",
+                  sv["schema_version"] == "0.6"
                   and all(n.get("agent") == byname[n["layer"]] for n in nodes), str(nodes[:1]))
 
         rc, out = ctx.wf("task-new", "--title", "过程目标测试", "--slug", "process-goal",
@@ -1361,6 +1381,85 @@ def run(ctx: Ctx):
     ctx.check("下一层可开工：自动链才指向它",
               rt._next_package(rtw, parent) == child)
     ctx.edit_env(child, lambda e: e["lifecycle"].__setitem__("status", old_status))
+
+    print("R22 透明化：状态词不超出证据、交付来源、比的是什么、判据来源")
+    wfm = rt.wf                      # 沙箱里的 wf 模块（R21 已从副本加载）
+    wt = wfm.WF(ctx.root)
+    sv_ = ctx.get("/api/state")
+    all_views = [p for g in sv_["layers"].values() for p in g["packages"]]
+    pv = next((p for p in all_views if p["lifecycle"] == "passed"), None)
+    ctx.check("全站不再出现「已验证」这个状态词", all(p["state"] != "已验证" for p in all_views),
+              str(sorted({p["state"] for p in all_views})))
+    ctx.check("核对通过的包，状态词写的是「核对通过」", pv is not None and pv["state"] == "核对通过",
+              str(pv and pv["state"]))
+    pc = ctx.get(f"/api/package/{pv['package_id']}")["card"] if pv else {}
+    scope = (pc.get("state") or {}).get("scope") or {}
+    ctx.check("卡片写明核对了什么、没核对什么（结论内容对不对不在核对范围内）",
+              "交付项齐全" in scope.get("checked", []) and "结论内容本身是否成立" in scope.get("unchecked", []),
+              str(scope)[:240])
+    ctx.check("核对回执不再把上游那一项叫「上游已验证」",
+              bool(pc.get("checks")) and all(ch["label"] != "上游已验证" for ch in pc["checks"]),
+              str([ch.get("label") for ch in pc.get("checks", [])]))
+    ctx.check("人读报告抬头带核对范围",
+              bool(pc) and "没有核对：结论内容本身是否成立" in wfm._report_scope_text(pc),
+              wfm._report_scope_text(pc)[:200])
+
+    # 交付来源：登记册按内容寻址，同一份内容第二次登记返回的是第一次的记录——所以能机械判断
+    rec = {"artifact_id": "ART-unit", "relpath": "missions/case/candidate.sv",
+           "registered_at": "2026-11-18T17:36:58"}
+    late = {"provenance": {"created_at": "2026-11-28T10:50:19"}}
+    early = {"provenance": {"created_at": "2026-11-18T17:00:00"}}
+    kinds = {
+        "input": wfm._artifact_origin(late, "evidence", rec, set()),
+        "upstream": wfm._artifact_origin(late, "evidence", rec, {"ART-unit"}),
+        "preexisting": wfm._artifact_origin(late, "evidence", dict(rec, relpath="designs/x.sv"), set()),
+        "own": wfm._artifact_origin(early, "evidence", rec, set()),
+        "root": wfm._artifact_origin(late, "evidence", rec, set(), is_root=True),
+        "same_day": wfm._artifact_origin({"provenance": {"created_at": "2026-11-18T17:36:58"}},
+                                         "evidence", dict(rec, registered_at="2026-11-18T23:59:59"), set()),
+    }
+    ctx.check("内容在本包之前就登记过 → 标出来（输入 / 上游 / 早已登记）",
+              kinds["input"]["kind"] == "input" and kinds["upstream"]["kind"] == "upstream"
+              and kinds["preexisting"]["kind"] == "preexisting", str(kinds)[:260])
+    ctx.check("本包建立后才登记 → 本层首次登记；根层的文件 → 基准输入",
+              kinds["own"]["kind"] == "own" and kinds["root"]["kind"] == "input"
+              and "基准输入" in kinds["root"]["note"], str(kinds)[:260])
+    ctx.check("同一天里晚于建包时刻的登记不会被误判成早已存在", kinds["same_day"]["kind"] == "own",
+              str(kinds["same_day"]))
+    ctx.check("来源只说登记册能判断的事实：不写「拷贝」，只说没有产生新内容",
+              all("拷贝" not in wfm.origin_text(v) for v in kinds.values())
+              and "本层没有产生新的内容" in wfm.origin_text(kinds["input"]),
+              wfm.origin_text(kinds["input"]))
+
+    # 比的是什么：没记录就如实说没记录
+    ctx.check("测试没记比较对象 → 如实写「比较对象没有记录」",
+              wfm.comparison_text({"kind": "test"}).startswith("比较对象没有记录"),
+              wfm.comparison_text({"kind": "test"}))
+
+    # 判据来源：认得出 L3 的分层判据与 L7 的预注册判据；同编号不同来源都保留
+    crit = wfm._criteria_of({"payload": {
+        "acceptance_criteria": {"bottleneck_resolution": {"BR-1": {"criterion": "甲"}},
+                                "measurement_frames": {"NV_status": {"frame": "F2"}}},
+        "preregistered_criteria": {"BR-2": "乙"}}})
+    ctx.check("判据来源：认得出分层的与预注册的判据，不把基架说明当判据",
+              [c["id"] for c in crit] == ["BR-1", "BR-2"], str(crit))
+    anc3 = {"identity": {"package_id": "PKG-L3-x", "layer_id": "L3"},
+            "artifacts": [], "provenance": {"parent_package_refs": []},
+            "payload": {"acceptance_criteria": {"BR-1": "甲", "BR-3": "丙"}}}
+    anc7 = {"identity": {"package_id": "PKG-L7-x", "layer_id": "L7"},
+            "artifacts": [], "provenance": {"parent_package_refs": ["PKG-L3-x"]},
+            "payload": {"preregistered_criteria": {"BR-1": "甲'", "BR-3": "丙'"}}}
+    child = {"identity": {"package_id": "PKG-L8-x", "layer_id": "L8"}, "artifacts": [],
+             "provenance": {"parent_package_refs": ["PKG-L7-x"]},
+             "payload": {"waived_criteria": {"BR-3": "本轮不测：留给下一轮"}}}
+    idx = {"PKG-L3-x": anc3, "PKG-L7-x": anc7}
+    ev = [{"id": "RES-1", "kind": "test", "title": "BR-1 定向实测", "verdict": "pass"},
+          {"id": "RES-3", "kind": "test", "title": "BR-10 不相干的测试", "verdict": "pass"}]
+    rows = wfm._criteria_lines(wt, child, idx, ev)
+    ctx.check("判据来源：上游判据原文 + 同编号测试并列；BR-10 不会被当成 BR-1",
+              [(r["from_layer"], r["id"]) for r in rows] == [("L7", "BR-1"), ("L7", "BR-3"), ("L3", "BR-1"), ("L3", "BR-3")]
+              and [len(r["tests"]) for r in rows] == [1, 0, 1, 0], str(rows)[:320])
+    ctx.check("判据来源：放弃的判据带理由", rows[1]["waived"] == "本轮不测：留给下一轮", str(rows[1]))
 
     print("R9 引擎自检")
     rc, out = ctx.wf("selftest")

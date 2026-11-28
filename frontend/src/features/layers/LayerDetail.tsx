@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import type { GateReport, JobEvent, JobInfo, LayerCard, Receipt, StateWord } from '../../types'
 import { FRAME_LABEL, LAYER_NAME, TRUTH_LABEL, fmtTime, receiptAction } from '../../status'
-import { GIVE_KIND_LABEL, GiveRow, artifactPurpose, giveKind, pkgShort, verdictWord } from '../shared/Give'
+import { GIVE_KIND_LABEL, GiveRow, artifactPurpose, comparisonFlag, comparisonText, giveKind, originText, pkgShort, verdictWord } from '../shared/Give'
 import { actionError, useAction } from '../shared/useAction'
 import { ActionNotice, PageErr, PageLoad, StateChip } from '../shared/ui'
 import { flowHref, layerHref, useWork } from '../tasks/useWork'
@@ -50,7 +50,7 @@ interface Notice { kind: 'ok' | 'err' | 'info'; title: string; report?: GateRepo
 
 /** 核对的详细结论 → 一句人话。状态词与原因在页头，由卡片刷新后给出。 */
 function verdictText(v: string): { kind: 'ok' | 'err' | 'info'; title: string } {
-  if (v === 'pass') return { kind: 'ok', title: '核对通过：这一层已验证，下游可以用它交出的结论。' }
+  if (v === 'pass') return { kind: 'ok', title: '核对通过：结构、登记证据、上游状态与签字都过了核对。结论内容本身不在核对范围内。' }
   if (v === 'needs_decision') return { kind: 'info', title: '只差人的决定：这一层要有人签字（或内容改过之后重签），才能交给下游。' }
   if (v === 'unresolved') return { kind: 'info', title: '还缺验证：还没有登记在册并且通过的测试。' }
   return { kind: 'err', title: '核对没通过。原因见下，改完再核对。' }
@@ -247,6 +247,8 @@ function DecisionWindow({ pkg, card, onNotice }: { pkg: string; card: LayerCard;
   const [signer, setSigner] = useState('')
   const [rejecting, setRejecting] = useState<string | null>(null)
   const [reason, setReason] = useState('')
+  const [approving, setApproving] = useState<string | null>(null)
+  const [approveNote, setApproveNote] = useState('')
   const [error, setError] = useState('')
   const [more, setMore] = useState(false)
 
@@ -258,9 +260,12 @@ function DecisionWindow({ pkg, card, onNotice }: { pkg: string; card: LayerCard;
   const approve = async (r: Receipt) => {
     setError('')
     if (!agent.trim()) return setError('请先在右上角填写操作人——批准要署名')
-    const resp = await run({ action: 'approve', dec: r.decision_id, as: agent.trim(), agent: agent.trim() })
+    if (!approveNote.trim()) return setError('批准要写一句你核对了什么——只记「谁点的」，事后看不出依据什么批的')
+    const resp = await run({ action: 'approve', dec: r.decision_id, as: agent.trim(), agent: agent.trim(), note: approveNote.trim() })
     if (!resp.ok) return setError(actionError(resp))
-    onNotice({ kind: 'ok', title: `已由 ${agent.trim()} 批准：「${r.summary}」。` })
+    setApproving(null)
+    setApproveNote('')
+    onNotice({ kind: 'ok', title: `已由 ${agent.trim()} 批准：「${r.summary}」。批注：${approveNote.trim()}` })
   }
   const reject = async (r: Receipt) => {
     setError('')
@@ -318,10 +323,25 @@ function DecisionWindow({ pkg, card, onNotice }: { pkg: string; card: LayerCard;
             <span className="receipt-btns">
               {r.stale
                 ? <button className="tf-btn mini primary" disabled={busy} onClick={recheck}>重新核对生成新待签</button>
-                : <button className="tf-btn mini" disabled={busy} onClick={() => approve(r)}>批准</button>}
+                : <button className="tf-btn mini" disabled={busy}
+                  onClick={() => { setApproving(r.decision_id); setApproveNote(''); setError('') }}>批准</button>}
               <button className="tf-btn mini danger" disabled={busy}
                 onClick={() => { setRejecting(r.decision_id); setReason(''); setError('') }}>驳回</button>
             </span>
+            {approving === r.decision_id && (
+              <div className="inline-form">
+                <label>核对了什么（一句话，必填）
+                  <input value={approveNote}
+                    placeholder="如：看过接口卡 S1–S3，三条实测都指向登记在册且通过的测试"
+                    onChange={(e) => setApproveNote(e.target.value)} />
+                </label>
+                <div className="form-hint">回执会原样记下这句话。只记「谁点的」，事后看不出依据什么批的。</div>
+                <div className="form-btns">
+                  <button className="tf-btn mini primary" disabled={busy} onClick={() => approve(r)}>确认批准</button>
+                  <button className="tf-btn mini" onClick={() => setApproving(null)}>取消</button>
+                </div>
+              </div>
+            )}
             {rejecting === r.decision_id && (
               <div className="inline-form">
                 <label>驳回理由
@@ -340,6 +360,9 @@ function DecisionWindow({ pkg, card, onNotice }: { pkg: string; card: LayerCard;
             <span className="receipt-at">{fmtTime(r.at)}</span>
             <span className="receipt-by">{r.by}</span>
             {receiptAction(r)}
+            {r.outcome && (r.note
+              ? <span className="receipt-note">{r.outcome === '驳回' ? '理由' : '批注'}：{r.note}</span>
+              : <span className="receipt-flags">{r.outcome === '驳回' ? '没有写明理由' : '没有写明核对了什么'}</span>)}
             {r.stale && (
               <>
                 {/* 已经有更新的有效签字时，过期的回执只留痕，不再催重签 */}
@@ -514,12 +537,12 @@ function Detail({ pkg }: { pkg: string }) {
     const base = verdictText(v)
     let { kind, title } = base
     if (v === 'pass') {
-      // 核对通过 ≠ 这一层已验证：还有事等人决定时要说清楚
+      // 核对通过 ≠ 可以交给下游：还有事等人决定时要说清楚
       const fresh = await api.package(pkg).catch(() => null)
       const pend = fresh?.card.receipts.filter((r) => r.pending).length ?? 0
       if (pend) {
         kind = 'info'
-        title = `核对通过。但还有 ${pend} 件事等人决定——在下面「人的决定」里处理完，这一层才算已验证。`
+        title = `核对通过。但还有 ${pend} 件事等人决定——在下面「人的决定」里处理完，这一层才能交给下游。`
       }
     }
     setNotice({
@@ -631,8 +654,6 @@ function Detail({ pkg }: { pkg: string }) {
   for (const give of gives) for (const id of give.evidence ?? []) citedIds.add(id)
   const withEvidence = gives.filter((g) => (g.evidence ?? []).length > 0)
   const withoutEvidence = gives.filter((g) => (g.evidence ?? []).length === 0)
-  const citedTests = tests.filter((t) => (t.for_statement ?? []).some((sid) => gives.some((g) => g.id === sid)))
-  const otherTests = tests.filter((t) => !citedTests.includes(t))
   const uncitedArts = arts.filter((a) => !citedIds.has(a.id))
   const raw = data.raw
   const isHumanDelivery = (a: typeof arts[number]) =>
@@ -655,6 +676,11 @@ function Detail({ pkg }: { pkg: string }) {
         {e.hash ? ` · ${e.hash.slice(0, 12)}` : ''}
         {e.for_test?.length ? ` · 支撑测试 ${e.for_test.join('、')}` : e.cited === false ? ' · 未被结论引用' : ''}
       </span>
+      {originText(e.origin, e.path) && (
+        <span className={'artifact-origin' + (e.origin?.kind === 'own' ? '' : ' not-new')}>
+          来源：{originText(e.origin, e.path)}
+        </span>
+      )}
     </div>
   ))
 
@@ -694,6 +720,11 @@ function Detail({ pkg }: { pkg: string }) {
           <h1>{c.title}</h1>
         </div>
         <div className="ld-why">{c.state.word}——{c.state.why}</div>
+        {c.state.word === '核对通过' && c.state.scope && (
+          <div className="ld-scope">
+            核对了：{c.state.scope.checked.join('、')}。没有核对：{c.state.scope.unchecked.join('、')}。
+          </div>
+        )}
         <div className="ld-meta">
           {c.iteration_label && <span>{c.iteration_label}</span>}
           {taskTitle && <span>任务：{taskTitle}</span>}
@@ -1030,6 +1061,31 @@ function Detail({ pkg }: { pkg: string }) {
           {isContractLayer && withoutEvidence.length > 0 && (
             <div className="muted small">S1–S4 未挂 ART/RES；契约层允许，依据见上面的 takes。</div>
           )}
+          {c.criteria.length > 0
+            && (c.layer === 'L7' || c.layer === 'L8' || c.criteria.some((r) => r.tests.length > 0 || r.waived)) && (
+            <div className="ev-criteria">
+              <div className="block-k">判据来源</div>
+              <div className="ev-why">
+                上游定下的判据原文，对照本页登记的同编号测试。按编号对应——编号相同不代表内容相同，请对照两边的原文。
+              </div>
+              {c.criteria.map((r) => (
+                <div className="ev-crit" key={r.from_pkg + r.id}>
+                  <div className="ev-crit-head">
+                    <Link to={layerHref(r.from_pkg)}>{r.from_layer}</Link>
+                    <span className="mono">{r.id}</span>
+                  </div>
+                  <div className="ev-crit-text">{r.text}</div>
+                  <div className="ev-crit-tests">
+                    {r.waived
+                      ? <span className="muted">本层放弃这条判据：{r.waived}</span>
+                      : r.tests.length > 0
+                        ? <>同编号测试：{r.tests.map((t) => `「${t.title}」（${verdictWord(t.verdict)}）`).join('、')}</>
+                        : <span className="ev-missing">同编号测试：无</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           {gives.map((give, i) => {
             if ((give.evidence ?? []).length === 0) return null
             return (
@@ -1045,7 +1101,7 @@ function Detail({ pkg }: { pkg: string }) {
                   return (
                     <div className="ev-line" key={id}>
                       {e.package_ref ? `来自 ${pkgShort(e.package_ref)} · ` : ''}
-                      测试「{e.title}」：{verdictWord(e.verdict)}（{e.strength ?? '—'}）
+                      测试「{e.title}」：{verdictWord(e.verdict)}（{e.strength ?? '—'}）{comparisonFlag(e)}
                       {e.for_statement && e.for_statement.length > 0 ? ` · 支撑 ${e.for_statement.join('、')}` : ''}
                     </div>
                   )
@@ -1061,6 +1117,9 @@ function Detail({ pkg }: { pkg: string }) {
                       {artifactPurpose(e.artifact_type, e.path)} · {e.path || e.id}
                       {e.hash ? ` · ${e.hash.slice(0, 12)}` : ''}
                     </span>
+                    {e.origin?.kind && e.origin.kind !== 'own' && (
+                      <span className="ev-origin">{originText(e.origin, e.path)}</span>
+                    )}
                     {e.for_test?.length
                       ? <span className="muted"> · 支撑测试 {e.for_test.join('、')}</span>
                       : e.cited === false ? <span className="ev-missing"> · 未被结论引用</span> : null}
@@ -1070,16 +1129,20 @@ function Detail({ pkg }: { pkg: string }) {
             </div>
             )
           })}
-          {otherTests.length > 0 && (
-            <details className="ev-more">
-              <summary>其他登记测试（{otherTests.length}）</summary>
-              {otherTests.map((e) => (
-                <div className="ev-line" key={e.id}>
-                  测试「{e.title}」：{verdictWord(e.verdict)}（{e.strength ?? '—'}）
-                  {e.for_statement && e.for_statement.length > 0 ? ` · 支撑 ${e.for_statement.join('、')}` : ' · 没有被结论引用'}
+          {tests.length > 0 && (
+            <div className="ev-tests">
+              <div className="block-k">每条登记测试比的是什么</div>
+              {tests.map((e) => (
+                <div className="ev-line ev-line-test" key={e.id}>
+                  <div>
+                    {e.package_ref ? `来自 ${pkgShort(e.package_ref)} · ` : ''}
+                    测试「{e.title}」：{verdictWord(e.verdict)}（{e.strength ?? '—'}）
+                    {e.for_statement && e.for_statement.length > 0 ? ` · 支撑 ${e.for_statement.join('、')}` : ' · 没有被结论引用'}
+                  </div>
+                  <div className="ev-compare">{comparisonText(e)}</div>
                 </div>
               ))}
-            </details>
+            </div>
           )}
           {uncitedArts.length > 0 && (
             <details className="ev-more">

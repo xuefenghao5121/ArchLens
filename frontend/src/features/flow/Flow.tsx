@@ -204,8 +204,8 @@ export default function Flow() {
   const roundLive = iteration?.status === 'draft' || iteration?.status === 'active'
   const pending = task?.receipts.filter((r) => r.pending) ?? []
   const nodes = iteration?.nodes ?? []
-  const done = nodes.filter((n) => n.state === '已验证').length
-  const stuck = nodes.filter((n) => n.state !== '已验证')
+  const done = nodes.filter((n) => n.state === '核对通过').length
+  const stuck = nodes.filter((n) => n.state !== '核对通过')
 
   return (
     <div className="flowp">
@@ -285,8 +285,8 @@ export default function Flow() {
               <div className="flow-foot">
                 <div className="flow-progress" data-complete={iteration.complete}>
                   {iteration.complete
-                    ? `本轮完成：${nodes.length} 个框都已验证。`
-                    : `本轮进度：${done} / ${nodes.length} 个框已验证。`}
+                    ? `本轮完成：${nodes.length} 个框都核对通过。`
+                    : `本轮进度：${done} / ${nodes.length} 个框核对通过。`}
                 </div>
                 {live && !form && !roundLive && (
                   <div className="head-actions">

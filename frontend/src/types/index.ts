@@ -13,7 +13,7 @@ export type Lifecycle =
 export type TaskStatus = 'draft' | 'active' | 'sealed' | 'aborted'
 
 /** 唯一的状态词：由核对结果机械得出，后面跟一句原因 */
-export type StateWord = '未开始' | '进行中' | '待人决定' | '未验证' | '有问题' | '已验证' | '已作废'
+export type StateWord = '未开始' | '进行中' | '待人决定' | '未验证' | '有问题' | '核对通过' | '已作废'
 
 export type Truth = 'observed' | 'deduced' | 'assumed'
 export type Frame = 'F0' | 'F1' | 'F2' | 'F3'
@@ -79,6 +79,8 @@ export interface Receipt {
   stale: boolean
   about?: string
   outcome?: '批准' | '驳回'
+  // 人写的那句话：批准时核对了什么、为什么驳回。旧记录没有留，就是空串
+  note?: string
 }
 
 export interface EvidenceLine {
@@ -96,11 +98,17 @@ export interface EvidenceLine {
   for_statement?: string[]
   log?: string
   raw?: string
+  // 比的是什么：拿什么和什么比、在什么激励下。没记录时为 null/undefined，页面如实写「没有记录」
+  comparison?: { under_test?: string; reference?: string; stimulus?: string } | null
+  control?: string
+  intervention?: string
   // artifact
   artifact_type?: string
   hash?: string
   path?: string
   role?: string
+  /** 这份内容是哪来的：own 本层首次登记 / upstream 与上游登记的相同 / input 与输入相同 / preexisting 本包建立前就已登记 */
+  origin?: { kind: 'own' | 'upstream' | 'input' | 'preexisting'; path?: string; at?: string; note?: string }
   cited?: boolean
   // 该工件是哪些 RES 的运行证据（测试原始日志/统计）
   for_test?: string[]
@@ -147,6 +155,16 @@ export interface LayerGuide {
   agent?: LayerAgent
 }
 
+export interface CriterionRow {
+  id: string
+  text: string
+  from_pkg: string
+  from_layer: string
+  tests: { id: string; title: string; verdict?: string; package_ref?: string }[]
+  /** 本层不测这条判据时写明的理由；空串 = 没写 */
+  waived: string
+}
+
 export interface LayerCard {
   package_id: string
   layer: LayerId
@@ -159,7 +177,11 @@ export interface LayerCard {
   // 任务目标的原话（不变量）：每一层看到同一句
   goal: string
   intent: string
-  state: { word: StateWord; why: string; lifecycle: Lifecycle; verdict: string }
+  state: {
+    word: StateWord; why: string; lifecycle: Lifecycle; verdict: string
+    /** 核对查了什么、没查什么。状态词不替人下结论，范围要写出来 */
+    scope: { checked: string[]; unchecked: string[] }
+  }
   guide: LayerGuide
   interface: InterfaceCard
   checks: CheckRow[]
@@ -167,6 +189,8 @@ export interface LayerCard {
   gate_report: string
   receipts: Receipt[]
   evidence: EvidenceLine[]
+  /** 判据来源：上游定下的判据原文，对照本页登记的同编号测试。按编号对应，编号相同不代表内容相同 */
+  criteria: CriterionRow[]
   reproduce_command: string
   parents: string[]
   parents_derived: boolean
@@ -219,6 +243,8 @@ export interface TaskReceipt {
   at: string
   about?: string
   outcome?: '批准' | '驳回'
+  // 人写的那句话：批准时核对了什么、为什么驳回。旧记录没有留，就是空串
+  note?: string
 }
 
 export interface IterationLayer {
@@ -237,9 +263,9 @@ export interface IterationView {
   started_at: string
   flow_template: string
   nodes: FlowNode[]
-  // 本轮完成 = 模板里每个框都已验证
+  // 本轮完成 = 模板里每个框都核对通过
   complete: boolean
-  // 第一个没到「已验证」的框；null = 全部已验证
+  // 第一个没到「核对通过」的框；null = 全部核对通过
   frontier: string | null
   reached_l8: boolean
   pending_decisions: number

@@ -153,3 +153,17 @@
 .machine-delivery { margin: 2px 0 4px; }
 .machine-delivery > summary { cursor: pointer; font-size: 12px; color: var(--muted); padding: 3px 0; }
 .ev-takes { border-left: 2px solid var(--line); padding-left: 8px; margin: 4px 0; }
+
+/* ---- 透明化：核对范围、交付来源、测试一句话、判据来源、签字批注 ---- */
+.ld-scope { font-size: 12px; line-height: 1.6; color: var(--muted); margin-top: 4px; }
+.artifact-origin { font-size: 12px; color: var(--muted); }
+.artifact-origin.not-new { color: var(--warning); }
+.ev-compare { font-size: 12px; color: var(--muted); padding: 1px 0 2px 12px; line-height: 1.5; }
+.ev-origin { font-size: 12px; color: var(--warning); width: 100%; padding-left: 12px; }
+.ev-criteria { margin: 4px 0 8px; }
+.ev-crit { border-left: 2px solid var(--line); padding: 4px 0 4px 8px; margin: 4px 0; }
+.ev-crit-head { font-size: 12px; font-weight: 600; display: flex; gap: 6px; align-items: baseline; }
+.ev-crit-text { font-size: 12px; line-height: 1.6; }
+.ev-crit-tests { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.receipt-note { color: var(--muted); }
+.ev-tests { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 6px; }

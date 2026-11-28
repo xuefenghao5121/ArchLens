@@ -18,7 +18,7 @@
 3. 证据必须 `wf register-artifact` 入 store 后再引用；跑完即落盘，不留 /tmp。
 4. L2 输出三态：model_supported / rejected / unresolved。测试未跑完不得写 supported。
 5. 高权重层（L1/L2）完成时 `wf decide` 记录（reviewer=pending-user 等人批）。
-6. **层接口卡**（新建任务下的层包必须写；`wf guide` 给出骨架）：信封的 `interface` 写明本层要回答的问题、用了上游哪几条结论（`takes`）、交给下游的 1–5 条结论（`gives`，每条一句话，带真值 observed/deduced/assumed、基架 F0–F3、证据 `RES-…` / `ART-…`）、没解决的问题（`open`）、适用边界（`limits`）。下游只拿这张卡（`wf brief`），不读本层全文。核对时强制：标「实测」的结论必须指向登记在册且通过的测试结果；上游没验证完，下游不能通过；核对或签字之后接口卡再改，「已验证」与签字都不再算数，要重新核对 / 重签。`--summary` 必填：用一句话（≤80 字）写明决定了什么，详细依据放 `--rationale`。
+6. **层接口卡**（新建任务下的层包必须写；`wf guide` 给出骨架）：信封的 `interface` 写明本层要回答的问题、用了上游哪几条结论（`takes`）、交给下游的 1–5 条结论（`gives`，每条一句话，带真值 observed/deduced/assumed、基架 F0–F3、证据 `RES-…` / `ART-…`）、没解决的问题（`open`）、适用边界（`limits`）。下游只拿这张卡（`wf brief`），不读本层全文。核对时强制：标「实测」的结论必须指向登记在册且通过的测试结果；上游没验证完，下游不能通过；核对或签字之后接口卡再改，「核对通过」与签字都不再算数，要重新核对 / 重签。`--summary` 必填：用一句话（≤80 字）写明决定了什么，详细依据放 `--rationale`。
 
 ## 环境速查
 

@@ -20,7 +20,7 @@ function statusChip(t: TaskView) {
 /** 一轮的进展一句话：完成 / 结束 / 终止 / 卡在哪个框（以及那个框的状态） */
 function roundText(it: TaskView['iterations'][number]): { text: string; color: string } {
   if (it.status === 'aborted') return { text: '已终止', color: TASK_STATUS_META.aborted.color }
-  if (it.complete) return { text: '已验证完成', color: STATE_META['已验证'].color }
+  if (it.complete) return { text: '核对全部通过', color: STATE_META['核对通过'].color }
   if (it.status === 'sealed') return { text: '已结束', color: TASK_STATUS_META.sealed.color }
   const stuck = it.nodes.find((n) => n.layer === it.frontier)
   if (!stuck) return { text: '进行中', color: TASK_STATUS_META.active.color }
