@@ -3,45 +3,132 @@
   "title": "层包：公共溯源信封 + 层特定 payload（设计文档 §5.1）",
   "description": "八层共用信封。层特定字段在 payload 内，由 wf gate 的层规则表校验（避免无语义必填项）。",
   "type": "object",
-  "required": ["identity", "provenance", "design_spec", "artifacts", "validation", "lifecycle", "payload"],
+  "required": [
+    "identity",
+    "provenance",
+    "design_spec",
+    "artifacts",
+    "validation",
+    "lifecycle",
+    "payload"
+  ],
   "properties": {
     "identity": {
       "type": "object",
-      "required": ["layer_id", "package_id", "schema_version", "domain_pack", "title"],
+      "required": [
+        "layer_id",
+        "package_id",
+        "schema_version",
+        "domain_pack",
+        "title"
+      ],
       "properties": {
-        "layer_id": {"type": "string", "enum": ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8"]},
-        "package_id": {"type": "string", "pattern": "^PKG-[A-Za-z0-9._-]+$"},
-        "schema_version": {"const": "2.0"},
-        "domain_pack": {"type": "string", "pattern": "^DOMAIN-[A-Za-z0-9._-]+$"},
-        "title": {"type": "string", "minLength": 1},
-        "owner_agent": {"type": "string"},
+        "layer_id": {
+          "type": "string",
+          "enum": [
+            "L1",
+            "L2",
+            "L3",
+            "L4",
+            "L5",
+            "L6",
+            "L7",
+            "L8"
+          ]
+        },
+        "package_id": {
+          "type": "string",
+          "pattern": "^PKG-[A-Za-z0-9._-]+$"
+        },
+        "schema_version": {
+          "const": "2.0"
+        },
+        "domain_pack": {
+          "type": "string",
+          "pattern": "^DOMAIN-[A-Za-z0-9._-]+$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner_agent": {
+          "type": "string"
+        },
         "layer_name": {
           "type": "string",
-          "enum": ["observation", "attribution", "solution", "contract", "rtl", "integration", "experiment", "analysis"]
+          "enum": [
+            "observation",
+            "attribution",
+            "solution",
+            "contract",
+            "rtl",
+            "integration",
+            "experiment",
+            "analysis"
+          ]
         }
       }
     },
     "provenance": {
       "type": "object",
       "properties": {
-        "parent_package_refs": {"type": "array", "items": {"type": "string", "pattern": "^PKG-[A-Za-z0-9._-]+$"}},
-        "spec_refs": {"type": "array", "items": {"type": "string", "pattern": "^ART-[A-Za-z0-9._-]+$"}},
-        "code_commits": {"type": "object"},
-        "tool_versions": {"type": "object"},
-        "environment_hash": {"type": "string"},
-        "created_at": {"type": "string"},
-        "updated_at": {"type": "string"},
-        "mission_template": {"type": "string"},
-        "iteration_id": {"type": "string"},
-        "task_id": {"type": "string"},
+        "parent_package_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^PKG-[A-Za-z0-9._-]+$"
+          }
+        },
+        "spec_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^ART-[A-Za-z0-9._-]+$"
+          }
+        },
+        "code_commits": {
+          "type": "object"
+        },
+        "tool_versions": {
+          "type": "object"
+        },
+        "environment_hash": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string"
+        },
+        "mission_template": {
+          "type": "string"
+        },
+        "iteration_id": {
+          "type": "string"
+        },
+        "task_id": {
+          "type": "string"
+        },
         "brief": {
           "type": "object",
           "description": "开工简报的回执：wf brief --out 写下时记（时间、署名、简报指纹、所含上游）",
           "properties": {
-            "at": {"type": "string"},
-            "by": {"type": "string"},
-            "sha256": {"type": "string"},
-            "upstream": {"type": "array", "items": {"type": "string"}}
+            "at": {
+              "type": "string"
+            },
+            "by": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "upstream": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           }
         },
         "context_pulls": {
@@ -50,9 +137,15 @@
           "items": {
             "type": "object",
             "properties": {
-              "pkg": {"type": "string"},
-              "at": {"type": "string"},
-              "by": {"type": "string"}
+              "pkg": {
+                "type": "string"
+              },
+              "at": {
+                "type": "string"
+              },
+              "by": {
+                "type": "string"
+              }
             }
           }
         },
@@ -62,11 +155,24 @@
           "items": {
             "type": "object",
             "properties": {
-              "at": {"type": "string"},
-              "agent": {"type": "string"},
-              "model": {"type": "string"},
-              "duration_s": {"type": ["integer", "null"]},
-              "note": {"type": "string"}
+              "at": {
+                "type": "string"
+              },
+              "agent": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "duration_s": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "note": {
+                "type": "string"
+              }
             }
           }
         }
@@ -74,78 +180,207 @@
     },
     "design_spec": {
       "type": "object",
-      "required": ["intent"],
+      "required": [
+        "intent"
+      ],
       "properties": {
-        "intent": {"type": "string", "minLength": 1},
-        "assumptions": {"type": "array", "items": {"type": "string"}},
-        "constraints": {"type": "array", "items": {"type": "string"}}
+        "intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "implementation_spec": {
       "type": "object",
       "properties": {
-        "generator": {"type": "string"},
-        "template_refs": {"type": "array", "items": {"type": "string"}},
-        "parameters": {"type": "object"}
+        "generator": {
+          "type": "string"
+        },
+        "template_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "parameters": {
+          "type": "object"
+        }
       }
     },
     "artifacts": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["artifact_id", "artifact_type", "content_hash"],
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "content_hash"
+        ],
         "properties": {
-          "artifact_id": {"type": "string", "pattern": "^ART-[A-Za-z0-9._-]+$"},
+          "artifact_id": {
+            "type": "string",
+            "pattern": "^ART-[A-Za-z0-9._-]+$"
+          },
           "artifact_type": {
             "type": "string",
-            "enum": ["rtl_source", "kernel", "config", "script", "stats", "log", "report", "spec_doc", "data", "binary", "manifest", "test_artifact", "environment", "other"]
+            "enum": [
+              "rtl_source",
+              "kernel",
+              "config",
+              "script",
+              "stats",
+              "log",
+              "report",
+              "spec_doc",
+              "data",
+              "binary",
+              "manifest",
+              "test_artifact",
+              "environment",
+              "other"
+            ]
           },
-          "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-          "uri": {"type": "string"},
-          "note": {"type": "string"},
-          "role": {"type": "string"}
+          "content_hash": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "uri": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          }
         }
       }
     },
     "contract_manifest": {
       "type": "object",
-      "required": ["manifest_id", "validity_scope"],
+      "required": [
+        "manifest_id",
+        "validity_scope"
+      ],
       "properties": {
-        "manifest_id": {"type": "string", "pattern": "^MAN-[A-Za-z0-9._-]+$"},
-        "artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-        "interfaces": {"type": "array"},
-        "capabilities": {"type": "array"},
-        "validity_scope": {"type": "string", "minLength": 1}
+        "manifest_id": {
+          "type": "string",
+          "pattern": "^MAN-[A-Za-z0-9._-]+$"
+        },
+        "artifact_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "interfaces": {
+          "type": "array"
+        },
+        "capabilities": {
+          "type": "array"
+        },
+        "validity_scope": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
     "evidence": {
       "type": "object",
       "properties": {
-        "observation_refs": {"type": "array", "items": {"type": "string"}},
-        "derived_fact_refs": {"type": "array", "items": {"type": "string"}},
-        "candidate_refs": {"type": "array", "items": {"type": "string"}},
-        "recommendation_refs": {"type": "array", "items": {"type": "string"}}
+        "observation_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "derived_fact_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "candidate_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recommendation_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "decision_refs": {
       "type": "array",
-      "items": {"type": "string", "pattern": "^DEC-[A-Za-z0-9._-]+$"}
+      "items": {
+        "type": "string",
+        "pattern": "^DEC-[A-Za-z0-9._-]+$"
+      }
     },
     "validation": {
       "type": "object",
-      "required": ["aggregate_verdict"],
+      "required": [
+        "aggregate_verdict"
+      ],
       "properties": {
-        "test_definition_refs": {"type": "array", "items": {"type": "string", "pattern": "^TST-[A-Za-z0-9._-]+$"}},
-        "test_run_refs": {"type": "array", "items": {"type": "string", "pattern": "^RUN-[A-Za-z0-9._-]+$"}},
-        "test_result_refs": {"type": "array", "items": {"type": "string", "pattern": "^RES-[A-Za-z0-9._-]+$"}},
+        "test_definition_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^TST-[A-Za-z0-9._-]+$"
+          }
+        },
+        "test_run_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^RUN-[A-Za-z0-9._-]+$"
+          }
+        },
+        "test_result_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^RES-[A-Za-z0-9._-]+$"
+          }
+        },
         "aggregate_verdict": {
           "type": "string",
-          "enum": ["pass", "fail", "unresolved", "needs_decision", "not_applicable", "not_gated"]
+          "enum": [
+            "pass",
+            "fail",
+            "unresolved",
+            "needs_decision",
+            "not_applicable",
+            "not_gated"
+          ]
         },
-        "coverage": {"type": "object"},
-        "validity_scope": {"type": "string"},
-        "gated_at": {"type": "string"},
-        "gate_report": {"type": "string"},
+        "coverage": {
+          "type": "object"
+        },
+        "validity_scope": {
+          "type": "string"
+        },
+        "gated_at": {
+          "type": "string"
+        },
+        "gate_report": {
+          "type": "string"
+        },
         "interface_sha": {
           "type": "string",
           "description": "上次核对时接口卡的内容指纹（只对新建任务下的层包记录）。与现在的指纹不一致 = 核对之后内容改过，「已验证」不再成立"
@@ -154,17 +389,45 @@
     },
     "lifecycle": {
       "type": "object",
-      "required": ["status"],
+      "required": [
+        "status"
+      ],
       "properties": {
         "status": {
           "type": "string",
-          "enum": ["draft", "ready", "running", "needs_decision", "validating", "passed", "failed", "unresolved", "rejected", "invalidated", "superseded"]
+          "enum": [
+            "draft",
+            "ready",
+            "running",
+            "needs_decision",
+            "validating",
+            "passed",
+            "failed",
+            "unresolved",
+            "rejected",
+            "invalidated",
+            "superseded"
+          ]
         },
-        "invalidation_reasons": {"type": "array", "items": {"type": "string"}},
-        "history": {"type": "array", "items": {"type": "object"}}
+        "invalidation_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
       }
     },
-    "payload": {"type": "object"},
-    "interface": {"type": "object"}
+    "payload": {
+      "type": "object"
+    },
+    "interface": {
+      "type": "object"
+    }
   }
 }

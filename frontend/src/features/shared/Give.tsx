@@ -27,6 +27,8 @@ export function giveKind(g: Give): GiveKind {
   return 'other'
 }
 const basename = (p?: string) => (p ? p.split('/').pop() ?? p : '')
+/** 包号只显示层号，避免在结论行里铺一长串 PKG-... */
+export const pkgShort = (p?: string) => (p ? p.replace(/^PKG-(L\d+)-.*$/, '$1') : '')
 
 /** 工件类型的人话；文件名能更具体说明用途时优先用文件名判断。 */
 export function artifactPurpose(type?: string, path?: string): string {
@@ -81,7 +83,7 @@ export function GiveRow({ g, ev, truth, frames, idx, onOpenArtifact }: {
               return (
                 <span key={id} className="give-ev-item">
                   {e.kind === 'test'
-                    ? `测试「${e.title}」：${verdictWord(e.verdict)}（${e.strength ?? '—'}）`
+                    ? `${e.package_ref ? `来自 ${pkgShort(e.package_ref)} · ` : ''}测试「${e.title}」：${verdictWord(e.verdict)}（${e.strength ?? '—'}）`
                     : `工件 ${basename(e.path) || id}（${artifactPurpose(e.artifact_type, e.path)}，哈希 ${e.hash ?? '—'}）`}
                 </span>
               )

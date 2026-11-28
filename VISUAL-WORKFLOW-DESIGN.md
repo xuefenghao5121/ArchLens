@@ -844,8 +844,9 @@ skills 在磁盘存在；tools 在工具包清单；正文非空；writes / must
   读写文件限制在仓库内；输出截断；命令超时；作业可请求停止。
 - **核对**：agent 调 `finish` 或给出最终文本后，平台自己跑 `wf gate <包>`，把 verdict / 报告写进作业；
   通过后写 `wf run-log`。agent 自报完成不算。
-- **串联**：`auto=true` 时，核对通过后找模板里的下一个框；只有该框已有自有层包才继续派，遇到待人决定 /
-  核对未过 / 没有下一个包就停。同一时刻只允许一个作业（store 是追加式，没有并发锁）。
+- **串联**：`auto=true` 时，核对通过后找模板里的下一个框；只有该框已有可开工的自有层包才继续派，
+  下一层无包、已作废/被取代、已通过或待人决定就停；核对未过也停。链式跳转前再复核一次生命周期，
+  绝不在死包上开工。同一时刻只允许一个作业（store 是追加式，没有并发锁）。
 - **作业**：`platform/runtime/jobs/<JOB>.json` + `.jsonl` 日志；状态
   queued / running / passed / needs_decision / gate_failed / error / stopped / max_turns。
 
@@ -856,7 +857,8 @@ skills 在磁盘存在；tools 在工具包清单；正文非空；writes / must
 `runtime_config {base_url, model, api_key?, api_key_env?, max_turns?}`；动作总数 26 → 29。
 
 界面：Agent 管理页顶部是「运行时」配置（未配置时展开表单）；层详情页有「平台内部运行」：一个开关
-「核对通过后自动派下一个有包的框（遇到待人决定就停）」、派发按钮、停止按钮、状态与最近 16 条日志。
+「核对通过后自动派下一个可开工的框（无包 / 已作废 / 已通过 / 待人决定就停）」、派发按钮、停止按钮、
+状态与最近 16 条日志。
 没有跳转 ZCode 的链接或提示词。
 
 【实测】人的决定发生在结果之后：开工前不知道 agent 会产出什么，所以平台不要求人提前提决定。运行时在
@@ -1265,3 +1267,44 @@ L3 的主交付是 payload 里的候选方案与验收判据；它不要求测�
 - 报告内容确定性生成，以 payload/接口卡/登记证据为准，不调用额外模型。
 
 L3 的机器可读交付仍是 payload + 接口卡；报告是同一事实的人读视图，不替代接口卡。
+
+## 26. L4 人读契约报告（zcode-glm，2026-11-28）
+
+L4 的主交付是 `contract_manifest`、resource_params 与接口卡，不是文件；因此“登记文件”为空是正常的。
+为让人能直接审契约，扩大 `ensure_layer_report` 到 L4：
+
+- 生成 `designs/<pkg>/contract_manifest.json`（可交接的机器契约：manifest + resource_params + interface）
+  和 `designs/<pkg>/L4-contract-report.md`（人读契约报告）；
+- 内容：manifest_id / validity_scope / capabilities、每个 interface 的 provides/timing/semantics、
+  resource_params 与 verification 三态、S1–S4、适用边界、下一层/人的问题、验证与文件；
+- 运行时在 L4 收工后、平台 gate 前自动生成；L4 页提供“生成/重新生成契约报告”；
+- 报告是 report 工件（role=layer-report），替换旧报告，挂进本包 artifacts。
+
+机器可读交付仍是 contract_manifest + payload + 接口卡；报告是同一事实的人读视图。
+
+## 27. 双面交付：人读面 + agent 面（zcode-glm，2026-11-28）
+
+交付件不是“一个 JSON”或“一个 Markdown”，而是同一事实的两面：
+
+| 面 | 文件 | 角色 | 给谁 |
+|---|---|---|---|
+| 人读 | `L2-attribution-report.md` / `L3-solution-report.md` / `L4-contract-report.md` | `layer-report` | 人：审核、签字 |
+| 机器 | `L2-delivery.json` / `L3-delivery.json` / `L4/contract_manifest.json` | `layer-delivery-machine` / `layer-contract` | agent：下游消费 |
+
+- UI 先显示“人读交付”，机器 JSON 收进“机器可读（给 agent）”折叠；
+- 证据/输入文件单独一栏，不混进交付；
+- L2/L3 的机器 JSON 包含 payload/interface/validation/artifacts；L4 的契约 JSON 包含 manifest/resource_params/interface；
+- 人读报告和机器 JSON 都由平台确定性生成，内容同源；报告不替代 JSON，JSON 也不替代报告。
+
+## 28. L5–L8 双面交付（zcode-glm，2026-11-28）
+
+`ensure_layer_report`/`ensure_layer_machine_delivery` 扩到 L5–L8：
+
+- 机器面：`L5-delivery.json` … `L8-delivery.json`（payload/interface/validation/artifacts）；
+- 人读面：`L5-rtl-report.md`（模块/testbench/强度/形式等价）、`L6-integration-report.md`（SimObject 映射/集成证据）、
+  `L7-experiment-report.md`（入口/环境/复现命令/测量裁决）、`L8-conclusion-report.md`（结论/对比/边界/未验证假设）；
+- 运行时在每层收工后、gate 前自动生成；UI 按钮覆盖 L2–L8；
+- 报告不替代接口卡：机器面给 agent，人读面给人。
+
+当前 cvfpu 链的 L5–L8 仍是旧 `invalidated` 包（L5 有 3 个旧 ART，L6–L8 为 0），所以没有新交付；
+L4 签字后新建/重做 L5，才会产生新的双面交付。

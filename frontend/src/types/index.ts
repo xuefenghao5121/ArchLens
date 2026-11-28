@@ -91,6 +91,8 @@ export interface EvidenceLine {
   proposition?: string
   executor?: string
   at?: string
+  // 这条测试结果登记在哪个包（上游引用的 RES 会显示 L7 等来源）
+  package_ref?: string
   for_statement?: string[]
   log?: string
   raw?: string
@@ -98,6 +100,7 @@ export interface EvidenceLine {
   artifact_type?: string
   hash?: string
   path?: string
+  role?: string
   cited?: boolean
   // 该工件是哪些 RES 的运行证据（测试原始日志/统计）
   for_test?: string[]

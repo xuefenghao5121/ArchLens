@@ -2448,29 +2448,57 @@ def _receipts(w, env):
 
 
 def _evidence_lines(w, env, iface):
-    """证据清单：登记在册的测试（名称、结论、强度）与工件（编号、哈希、路径）。"""
+    """证据清单：登记在册的测试（名称、结论、强度）与工件（编号、哈希、路径）。
+
+    测试结果不只来自本包 validation 里登记的那几条：接口卡 gives 可以直接引用上游（如 L7）
+    的 RES。两者都要进清单，否则前端拿 id 查不到，会误显示成“不在登记册”。
+    """
     tests, runs, results, arts = w.tests(), w.runs(), w.results(), w.artifacts()
     v = env.get("validation", {})
     out = []
     run_artifacts = {}
-    for rid in v.get("test_result_refs", []):
-        res = results.get(rid)
-        if not res:
-            out.append({"id": rid, "kind": "test", "title": "（结果不在登记册）", "verdict": "缺"})
-            continue
+    cited_results = {str(x) for g in iface.get("gives", []) for x in (g.get("evidence") or [])
+                     if str(x).startswith("RES-")}
+    cited_arts = {str(x) for g in iface.get("gives", []) for x in (g.get("evidence") or [])
+                  if str(x).startswith("ART-")}
+    seen_results = set()
+
+    def _for_statement(rid):
+        return [g.get("id") for g in iface.get("gives", []) if rid in (g.get("evidence") or [])]
+
+    def _add_test(rid, res, cited):
         run = runs.get(res.get("run_ref"), {})
         td = tests.get(run.get("test_ref"), {})
         for key in ("raw_result_artifact", "log_artifact"):
             aid = run.get(key)
             if aid:
                 run_artifacts.setdefault(aid, []).append(rid)
-        out.append({"id": rid, "kind": "test", "title": td.get("title") or td.get("test_id") or run.get("run_id", rid),
+        out.append({"id": rid, "kind": "test",
+                    "title": td.get("title") or td.get("test_id") or run.get("run_id", rid),
                     "proposition": _s(td.get("proposition"), 100), "verdict": res.get("verdict"),
                     "strength": STRENGTH_LABEL.get(td.get("strength", "V1"), td.get("strength", "")),
                     "executor": run.get("executor", ""), "at": run.get("started_at", ""),
+                    "package_ref": run.get("package_ref", ""),
                     "log": run.get("log_artifact", ""), "raw": run.get("raw_result_artifact", ""),
-                    "for_statement": [g.get("id") for g in iface.get("gives", []) if rid in (g.get("evidence") or [])]})
-    cited = {x for g in iface.get("gives", []) for x in (g.get("evidence") or []) if str(x).startswith("ART-")}
+                    "cited": cited, "for_statement": _for_statement(rid)})
+
+    for rid in v.get("test_result_refs", []):
+        seen_results.add(rid)
+        res = results.get(rid)
+        if not res:
+            out.append({"id": rid, "kind": "test", "title": "（结果不在登记册）", "verdict": "缺",
+                        "cited": rid in cited_results, "for_statement": _for_statement(rid)})
+            continue
+        _add_test(rid, res, rid in cited_results)
+    # 接口卡片直接引用的上游 RES：本包没把它登记进 validation，也仍然是已登记证据。
+    for rid in sorted(cited_results - seen_results):
+        res = results.get(rid)
+        if not res:
+            out.append({"id": rid, "kind": "test", "title": "（结果不在登记册）", "verdict": "缺",
+                        "cited": True, "for_statement": _for_statement(rid)})
+            continue
+        _add_test(rid, res, True)
+
     seen_arts = set()
     for a in env.get("artifacts", []):
         rec = arts.get(a.get("artifact_id"), {})
@@ -2478,20 +2506,28 @@ def _evidence_lines(w, env, iface):
         out.append({"id": a.get("artifact_id"), "kind": "artifact", "title": rec.get("note") or a.get("artifact_type", ""),
                     "artifact_type": a.get("artifact_type", ""), "hash": (a.get("content_hash") or "")[:12],
                     "path": rec.get("relpath") or rec.get("store_path") or rec.get("uri", ""),
-                    "cited": (a.get("artifact_id") in cited or a.get("artifact_id") in run_artifacts
-                              or a.get("role") == "layer-report"),
+                    "role": a.get("role", ""),
+                    "cited": (a.get("artifact_id") in cited_arts or a.get("artifact_id") in run_artifacts
+                              or a.get("role") in ("layer-report", "layer-contract", "layer-delivery-machine")),
                     "for_test": sorted(set(run_artifacts.get(a.get("artifact_id"), [])))})
     # 接口卡直接引用的工件，即使没有挂进 envelope.artifacts，也要能在卡片/交付/证据里看到；
     # 否则会出现“gate 认它已登记，界面却说不在登记册”的矛盾。
-    for aid in sorted(cited - seen_arts):
+    for aid in sorted(cited_arts - seen_arts):
         rec = arts.get(aid)
         if not rec:
             continue
         out.append({"id": aid, "kind": "artifact", "title": rec.get("note") or rec.get("artifact_type", ""),
                     "artifact_type": rec.get("artifact_type", ""), "hash": (rec.get("content_hash") or "")[:12],
                     "path": rec.get("relpath") or rec.get("store_path") or rec.get("uri", ""),
+                    "role": rec.get("role", ""),
                     "cited": True, "for_test": sorted(set(run_artifacts.get(aid, [])))})
     return out
+
+
+def _report_sign_text(card):
+    if not (card.get("guide") or {}).get("human"):
+        return "不需要"
+    return "已签" if any(not r["pending"] and not r["stale"] for r in card.get("receipts", [])) else "待签"
 
 
 def _l2_report_markdown(w, env):
@@ -2509,7 +2545,7 @@ def _l2_report_markdown(w, env):
         f"- 层包：`{ident.get('package_id')}`",
         f"- 所属：{(task or {}).get('task_id', '—')} / {(it or {}).get('iteration_id', '—')}",
         f"- 状态：{card['state']['word']}（{card['state']['why']}）",
-        f"- 核对：{card['state']['verdict']}；签字：{'已签' if any(not r['pending'] and not r['stale'] for r in card['receipts']) else '待签'}",
+        f"- 核对：{card['state']['verdict']}；签字：{_report_sign_text(card)}",
         f"- 任务目标（原话）：{goal or '—'}",
         "",
         "## 这一层回答的问题",
@@ -2614,7 +2650,7 @@ def _l3_report_markdown(w, env):
         f"- 层包：`{ident.get('package_id')}`",
         f"- 所属：{(task or {}).get('task_id', '—')} / {(it or {}).get('iteration_id', '—')}",
         f"- 状态：{card['state']['word']}（{card['state']['why']}）",
-        f"- 核对：{card['state']['verdict']}；签字：{'已签' if any(not r['pending'] and not r['stale'] for r in card['receipts']) else '待签'}",
+        f"- 核对：{card['state']['verdict']}；签字：{_report_sign_text(card)}",
         f"- 任务目标（原话）：{goal or '—'}",
         "",
         "## 这一层回答的问题",
@@ -2697,17 +2733,338 @@ def _l3_report_markdown(w, env):
     return "\n".join(lines) + "\n"
 
 
+def _l4_report_markdown(w, env):
+    """把 L4 的 contract_manifest/resource_params/接口卡收成一份人读契约报告。"""
+    ident = env["identity"]
+    task, it = w.iteration_of(env)
+    goal = ((task or {}).get("goal") or {}).get("statement", "")
+    p = env.get("payload") or {}
+    cm = env.get("contract_manifest") or {}
+    iface = env.get("interface") or {}
+    card = layer_card(w, env)
+    lines = [
+        f"# L4 契约报告：{ident.get('title', '')}",
+        "",
+        f"- 层包：`{ident.get('package_id')}`",
+        f"- 所属：{(task or {}).get('task_id', '—')} / {(it or {}).get('iteration_id', '—')}",
+        f"- 状态：{card['state']['word']}（{card['state']['why']}）",
+        f"- 核对：{card['state']['verdict']}；签字：{_report_sign_text(card)}",
+        f"- 任务目标（原话）：{goal or '—'}",
+        "",
+        "## 这一层回答的问题",
+        str(iface.get("question") or card["guide"].get("question") or "—"),
+        "",
+        "## 契约清单",
+        f"- **manifest_id**：{cm.get('manifest_id') or '—'}",
+        f"- **validity_scope**：{cm.get('validity_scope') or '—'}",
+    ]
+    caps = cm.get("capabilities") or []
+    if caps:
+        lines.append("- **能力**：" + "、".join(str(x) for x in caps))
+    lines += ["", "## 接口"]
+    interfaces = cm.get("interfaces") or []
+    if isinstance(interfaces, list) and interfaces:
+        for i, x in enumerate(interfaces, 1):
+            if not isinstance(x, dict):
+                lines.append(f"- {x}")
+                continue
+            lines.append(f"### {x.get('name') or f'接口 {i}'}")
+            for k, label in (("provides", "提供"), ("timing", "时序"), ("semantics", "语义"),
+                             ("equivalence_criteria", "等价判据"), ("guardrail_clause", "护栏条款")):
+                if x.get(k):
+                    lines.append(f"- **{label}**：{x[k]}")
+            for k, v in x.items():
+                if k not in ("name", "provides", "timing", "semantics", "equivalence_criteria", "guardrail_clause"):
+                    lines.append(f"- {k}: {v}")
+            lines.append("")
+    else:
+        lines.append("（未写 interfaces）")
+    lines += ["## 资源参数"]
+    rps = p.get("resource_params") or []
+    if isinstance(rps, list) and rps:
+        for r in rps:
+            if isinstance(r, dict):
+                val = r.get("value")
+                unit = f" {r.get('unit')}" if r.get("unit") else ""
+                lines.append(f"- **{r.get('name') or '—'}** = {val}{unit}；验证状态 `{r.get('verification') or '—'}`"
+                             + (f"；来源：{r.get('source')}" if r.get("source") else ""))
+            else:
+                lines.append(f"- {r}")
+    else:
+        lines.append("（未写 resource_params）")
+    if p.get("notes"):
+        lines += ["", "## 说明", str(p["notes"])]
+    lines += ["", "## 交给下游的结论"]
+    for g in iface.get("gives") or []:
+        lines.append(f"### {g.get('id')}【{g.get('kind') or TRUTH_LABEL.get(g.get('truth'), g.get('truth'))}】")
+        lines.append(str(g.get("text") or ""))
+        if g.get("evidence"):
+            lines.append("- 依据：" + "、".join(str(x) for x in g["evidence"]))
+        lines.append("")
+    lines += ["## 适用边界"]
+    for x in iface.get("limits") or []:
+        lines.append(f"- {x}")
+    if not iface.get("limits"):
+        lines.append("（未写适用边界）")
+    lines += ["", "## 留给下一层/人的问题"]
+    for x in iface.get("open") or []:
+        lines.append(f"- [{'人' if x.get('ask') == 'human' else '下一层'}] {x.get('question')}")
+    if not iface.get("open"):
+        lines.append("（无）")
+    tests = [e for e in card.get("evidence", []) if e.get("kind") == "test"]
+    lines += ["", "## 验证与文件"]
+    if tests:
+        for t in tests:
+            lines.append(f"- 测试 {t.get('id')} {t.get('title')}：{t.get('verdict')}")
+    else:
+        lines.append("- 本层不要求登记测试。")
+    for a in env.get("artifacts") or []:
+        if a.get("role") == "layer-report":
+            continue
+        lines.append(f"- `{a.get('uri') or a.get('artifact_id')}`（{a.get('artifact_type')}，{a.get('artifact_id')}）")
+    lines += ["", "---", "本报告由平台根据本包 contract_manifest、payload、接口卡与登记证据确定性生成；"
+              "内容以包内原始记录为准。"]
+    return "\n".join(lines) + "\n"
+
+
+def ensure_layer_machine_delivery(w, ref, by=""):
+    """L2/L3 的 agent 可读交付 JSON：payload + interface + validation + artifacts。
+    L4 的机器交付是 contract_manifest.json，不走这里。"""
+    env_path, env = w.resolve_pkg(ref)
+    layer = env["identity"]["layer_id"]
+    if layer not in ("L2", "L3", "L5", "L6", "L7", "L8"):
+        return None
+    pkg = env["identity"]["package_id"]
+    task, it = w.iteration_of(env)
+    doc = {
+        "schema": "archlens.layer_delivery.v1",
+        "package_id": pkg,
+        "layer": layer,
+        "task_id": (task or {}).get("task_id", ""),
+        "iteration_id": (it or {}).get("iteration_id", ""),
+        "payload": env.get("payload") or {},
+        "interface": env.get("interface") or {},
+        "validation": env.get("validation") or {},
+        "artifacts": env.get("artifacts") or [],
+    }
+    dest = Path(w.root) / "designs" / pkg / f"{layer}-delivery.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(doc, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    dest.write_text(text, encoding="utf-8")
+    art = w.register_artifact(str(dest), artifact_type="manifest",
+                              note=f"{pkg} agent 可读交付 JSON", role="layer-delivery-machine",
+                              agent=by or "平台")
+    def _mutate(e):
+        arts = e.setdefault("artifacts", [])
+        arts[:] = [a for a in arts if a.get("role") != "layer-delivery-machine"]
+        arts.append({"artifact_id": art["artifact_id"], "artifact_type": "manifest",
+                     "content_hash": art.get("content_hash", ""),
+                     "uri": art.get("relpath", ""), "role": "layer-delivery-machine"})
+    w.update_envelope(env_path, _mutate, agent=by or "平台")
+    return {"package_id": pkg, "artifact_id": art["artifact_id"],
+            "path": art.get("relpath", ""), "bytes": len(text.encode("utf-8"))}
+
+
+def ensure_layer_contract(w, ref, by=""):
+    """L4 的 RTL 设计契约导出：contract_manifest + resource_params 写成可交接的 JSON 工件。"""
+    env_path, env = w.resolve_pkg(ref)
+    if env["identity"]["layer_id"] != "L4":
+        raise SystemExit("错误：只有 L4 有 RTL 设计契约文件")
+    pkg = env["identity"]["package_id"]
+    cm = env.get("contract_manifest") or {}
+    if not cm:
+        raise SystemExit("错误：本包没有 contract_manifest，不能导出契约文件")
+    payload = env.get("payload") or {}
+    task, it = w.iteration_of(env)
+    doc = {
+        "schema": "archlens.layer_contract.v1",
+        "package_id": pkg,
+        "layer": "L4",
+        "task_id": (task or {}).get("task_id", ""),
+        "iteration_id": (it or {}).get("iteration_id", ""),
+        "manifest": cm,
+        "resource_params": payload.get("resource_params") or [],
+        "interface": env.get("interface") or {},
+    }
+    dest = Path(w.root) / "designs" / pkg / "contract_manifest.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(doc, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    dest.write_text(text, encoding="utf-8")
+    art = w.register_artifact(str(dest), artifact_type="manifest",
+                              note=f"{pkg} RTL 设计契约（可交接 JSON）", role="layer-contract",
+                              agent=by or "平台")
+
+    def _mutate(e):
+        arts = e.setdefault("artifacts", [])
+        arts[:] = [a for a in arts if a.get("role") != "layer-contract"]
+        arts.append({"artifact_id": art["artifact_id"], "artifact_type": "manifest",
+                     "content_hash": art.get("content_hash", ""),
+                     "uri": art.get("relpath", ""), "role": "layer-contract"})
+    w.update_envelope(env_path, _mutate, agent=by or "平台")
+    return {"package_id": pkg, "artifact_id": art["artifact_id"],
+            "path": art.get("relpath", ""), "bytes": len(text.encode("utf-8"))}
+
+
+def _generic_layer_report_markdown(w, env):
+    """L5–L8 的人读交付报告：把各层主 payload 字段翻成人读段落，附接口卡与登记文件。"""
+    ident = env["identity"]
+    layer = ident["layer_id"]
+    task, it = w.iteration_of(env)
+    goal = ((task or {}).get("goal") or {}).get("statement", "")
+    p = env.get("payload") or {}
+    iface = env.get("interface") or {}
+    card = layer_card(w, env)
+    names = {"L5": ("RTL 报告", "模块、testbench、验证强度"),
+             "L6": ("集成报告", "SimObject 映射、集成验证"),
+             "L7": ("实验报告", "入口、环境、复现命令与测量裁决"),
+             "L8": ("结论报告", "结论、对比、适用边界")}
+    label, sub = names.get(layer, (f"{layer} 报告", ""))
+    lines = [
+        f"# {layer} {label}：{ident.get('title', '')}",
+        "",
+        f"- 层包：`{ident.get('package_id')}`",
+        f"- 所属：{(task or {}).get('task_id', '—')} / {(it or {}).get('iteration_id', '—')}",
+        f"- 状态：{card['state']['word']}（{card['state']['why']}）",
+        f"- 核对：{card['state']['verdict']}；签字：{_report_sign_text(card)}",
+        f"- 任务目标（原话）：{goal or '—'}",
+        "",
+        "## 这一层回答的问题",
+        str(iface.get("question") or card["guide"].get("question") or "—"),
+        "",
+        f"## {sub or '本层交付'}",
+    ]
+    def kv(label_, value):
+        if value not in (None, "", [], {}):
+            lines.append(f"- **{label_}**：{value}")
+    if layer == "L5":
+        for m in p.get("rtl_modules") or []:
+            if isinstance(m, dict):
+                lines.append(f"- **模块 {m.get('name') or '—'}**"
+                             + (f"：来源 {m.get('source_artifact')}" if m.get("source_artifact") else "")
+                             + (f"；{m.get('note')}" if m.get("note") else ""))
+            else:
+                lines.append(f"- {m}")
+        kv("testbench", p.get("testbench_refs"))
+        kv("验证强度", p.get("verification_strength"))
+        if p.get("formal_equivalence"):
+            lines.append(f"- **形式等价**：{p['formal_equivalence']}")
+    elif layer == "L6":
+        for m in p.get("simobject_mappings") or []:
+            if isinstance(m, dict):
+                lines.append(f"### {m.get('simobject') or 'SimObject'}")
+                for k, v in m.items():
+                    if k != "simobject":
+                        lines.append(f"- **{k}**：{v}")
+                lines.append("")
+            else:
+                lines.append(f"- {m}")
+        kv("集成证据", p.get("integration_evidence"))
+    elif layer == "L7":
+        kv("入口", p.get("entry_refs"))
+        kv("脚本", p.get("scripts"))
+        kv("环境", p.get("environment"))
+        kv("复现命令", p.get("reproduce_command"))
+        for k in ("experiment_result", "verdict_data", "measurement_matrix", "dose_analysis"):
+            if p.get(k):
+                lines.append(f"### {k}")
+                lines.append(str(p[k]))
+                lines.append("")
+        for k in ("validity_scope", "measurement_frames_note"):
+            kv(k, p.get(k))
+    elif layer == "L8":
+        for c in p.get("conclusions") or []:
+            if isinstance(c, dict):
+                lines.append(f"- **结论**：{c.get('statement') or '—'}")
+                kv("模型因果", c.get("model_causal_status"))
+                kv("硬件证据", c.get("hardware_evidence_status"))
+            else:
+                lines.append(f"- {c}")
+        for c in p.get("comparisons") or []:
+            if isinstance(c, dict):
+                lines.append(f"- **对比**：{c.get('lhs')} vs {c.get('rhs')}；{c.get('delta') or ''}"
+                             + (f"（基架 {c.get('frame')}）" if c.get("frame") else ""))
+        kv("适用边界", p.get("validity_scope"))
+        kv("未验证假设", p.get("unverified_assumptions"))
+    else:
+        for k, v in p.items():
+            kv(k, v)
+    # 其他未单列的 payload 字段
+    shown = set()
+    if layer == "L5": shown |= {"rtl_modules", "testbench_refs", "verification_strength", "formal_equivalence"}
+    elif layer == "L6": shown |= {"simobject_mappings", "integration_evidence"}
+    elif layer == "L7": shown |= {"entry_refs", "scripts", "environment", "reproduce_command", "experiment_result", "verdict_data", "measurement_matrix", "dose_analysis", "validity_scope", "measurement_frames_note"}
+    elif layer == "L8": shown |= {"conclusions", "comparisons", "validity_scope", "unverified_assumptions"}
+    rest = {k: v for k, v in p.items() if k not in shown}
+    if rest:
+        lines += ["", "## 其他交付字段"]
+        for k, v in rest.items():
+            lines.append(f"- **{k}**：{v}")
+    lines += ["", "## 交给下游的结论"]
+    for g in iface.get("gives") or []:
+        lines.append(f"### {g.get('id')}【{g.get('kind') or TRUTH_LABEL.get(g.get('truth'), g.get('truth'))}】")
+        lines.append(str(g.get("text") or ""))
+        if g.get("evidence"):
+            lines.append("- 依据：" + "、".join(str(x) for x in g["evidence"]))
+        lines.append("")
+    lines += ["## 适用边界"]
+    for x in iface.get("limits") or []:
+        lines.append(f"- {x}")
+    if not iface.get("limits"):
+        lines.append("（未写适用边界）")
+    lines += ["", "## 留给下一层/人的问题"]
+    for x in iface.get("open") or []:
+        lines.append(f"- [{'人' if x.get('ask') == 'human' else '下一层'}] {x.get('question')}")
+    if not iface.get("open"):
+        lines.append("（无）")
+    tests = [e for e in card.get("evidence", []) if e.get("kind") == "test"]
+    lines += ["", "## 验证与文件"]
+    if tests:
+        seen = set()
+        for t in tests:
+            key = (t.get("title"), t.get("verdict"))
+            if key in seen: continue
+            seen.add(key)
+            lines.append(f"- 测试 {t.get('id')} {t.get('title')}：{t.get('verdict')}")
+    else:
+        lines.append("- 本层不要求登记测试。" if layer != "L5" and layer != "L6" and layer != "L7" and layer != "L8" else "- 还没有登记测试。")
+    for a in env.get("artifacts") or []:
+        if a.get("role") in ("layer-report", "layer-delivery-machine"):
+            continue
+        lines.append(f"- `{a.get('uri') or a.get('artifact_id')}`（{a.get('artifact_type')}，{a.get('artifact_id')}）")
+    lines += ["", "---", "本报告由平台根据本包 payload、接口卡与登记证据确定性生成；"
+              "内容以包内原始记录为准。"]
+    return "\n".join(lines) + "\n"
+
+
 def ensure_layer_report(w, ref, by=""):
-    """生成/更新 L2 归因报告或 L3 方案报告，登记成 report 工件并挂进本包。"""
+    """生成/更新 L2 归因报告、L3 方案报告或 L4 契约报告，登记成 report 工件并挂进本包。"""
     env_path, env = w.resolve_pkg(ref)
     layer = env["identity"]["layer_id"]
     pkg = env["identity"]["package_id"]
+    machine = None
     if layer == "L2":
+        machine = ensure_layer_machine_delivery(w, ref, by=by)
+        env_path, env = w.resolve_pkg(ref)
         filename, label, builder = "L2-attribution-report.md", "人读归因报告", _l2_report_markdown
     elif layer == "L3":
+        machine = ensure_layer_machine_delivery(w, ref, by=by)
+        env_path, env = w.resolve_pkg(ref)
         filename, label, builder = "L3-solution-report.md", "人读方案报告", _l3_report_markdown
+    elif layer == "L4":
+        ensure_layer_contract(w, ref, by=by)
+        env_path, env = w.resolve_pkg(ref)
+        filename, label, builder = "L4-contract-report.md", "人读契约报告", _l4_report_markdown
+    elif layer in ("L5", "L6", "L7", "L8"):
+        machine = ensure_layer_machine_delivery(w, ref, by=by)
+        env_path, env = w.resolve_pkg(ref)
+        names = {"L5": ("L5-rtl-report.md", "人读 RTL 报告"),
+                 "L6": ("L6-integration-report.md", "人读集成报告"),
+                 "L7": ("L7-experiment-report.md", "人读实验报告"),
+                 "L8": ("L8-conclusion-report.md", "人读结论报告")}
+        filename, label = names[layer]
+        builder = _generic_layer_report_markdown
     else:
-        raise SystemExit("错误：目前只为 L2/L3 生成人读报告")
+        raise SystemExit("错误：目前只为 L2–L8 生成人读报告")
     dest = Path(w.root) / "designs" / pkg / filename
     dest.parent.mkdir(parents=True, exist_ok=True)
     text = builder(w, env)
@@ -2723,7 +3080,9 @@ def ensure_layer_report(w, ref, by=""):
                      "uri": art.get("relpath", ""), "role": "layer-report"})
     w.update_envelope(env_path, _mutate, agent=by or "平台")
     return {"package_id": pkg, "artifact_id": art["artifact_id"],
-            "path": art.get("relpath", ""), "bytes": len(text.encode("utf-8"))}
+            "path": art.get("relpath", ""), "bytes": len(text.encode("utf-8")),
+            "contract_path": (Path(w.root) / "designs" / pkg / "contract_manifest.json").relative_to(w.root).as_posix() if layer == "L4" else "",
+            "machine_path": (machine or {}).get("path", "")}
 
 
 STATE_ORDER = ["已作废", "有问题", "待人决定", "未验证", "已验证", "进行中", "未开始"]
@@ -2893,6 +3252,10 @@ def layer_card(w, env, tasks=None, pkg_index=None):
          "detail": (f"{len(passed)} 条登记测试通过（{STRENGTH_LABEL.get(strength, strength)}）" if passed
                     else ("还没有通过的测试" if guide.get("needs_test") else "本层不要求测试"))},
     ]
+    schema_errs = validate(env, w.schema("layer_package"))
+    if schema_errs:
+        checks.insert(0, {"id": "schema", "label": "结构校验", "ok": False,
+                          "detail": f"{len(schema_errs)} 处不符合 schema：" + _s(schema_errs[0], 120)})
     for c in checks:
         if c["ok"] is True:
             c["mark"] = "✓"
@@ -5487,9 +5850,15 @@ _show_env_cache = {}
 def cmd_run_log(w, args):
     """记一条执行记录：谁、用什么模型、跑了多久。只记事实，不判断好坏。"""
     env_path, env = w.resolve_pkg(args.pkg)
+    dur = args.duration
+    if dur is not None:
+        try:
+            dur = int(round(float(dur)))
+        except (TypeError, ValueError):
+            dur = None
     rec = {"at": now(), "agent": (args.agent or "").strip() or "（未署名）",
            "model": (args.model or "").strip(),
-           "duration_s": args.duration, "note": (args.note or "").strip()}
+           "duration_s": dur, "note": (args.note or "").strip()}
     def _m(e):
         e.setdefault("provenance", {}).setdefault("runs", []).append(rec)
     w.update_envelope(env_path, _m, agent=rec["agent"])

@@ -136,9 +136,43 @@ def restore_invalidated_fixture(root):
         lc["invalidation_reasons"] = []
         lc["history"] = [h for h in hist if h is not last]
         e["lifecycle"] = lc
+        # 用户可能在真实 store 里对旧包跑过新作业，validation 会残留 fail；
+        # 恢复生命周期时同步恢复一个与状态一致的 verdict，否则卡片会显示“有问题”。
+        v = e.setdefault("validation", {})
+        v["aggregate_verdict"] = {"needs_decision": "needs_decision", "passed": "pass",
+                                  "failed": "fail", "draft": "not_gated",
+                                  "unresolved": "unresolved"}.get(lc["status"], v.get("aggregate_verdict", "not_gated"))
         p.write_text(json.dumps(e, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         n += 1
     return n
+
+
+def restore_live_task_fixture(root):
+    """真实任务被用户封板后，回归仍需要一个进行中的任务来测派发/作废/重做。
+    只在沙箱里把历史任务恢复为 active；真实 store 不动。"""
+    paths = sorted((root / "tasks").glob("*.json"))
+    tasks = []
+    for p in paths:
+        try:
+            tasks.append((p, json.loads(p.read_text(encoding="utf-8"))))
+        except (OSError, json.JSONDecodeError):
+            continue
+    if any(t.get("status") in ("draft", "active") and t.get("iterations")
+           for _, t in tasks):
+        return 0
+    ordered = sorted(tasks, key=lambda pt: (pt[1].get("task_id") != "TASK-cvfpu-overflow",
+                                            pt[0].name))
+    for p, t in ordered:
+        if t.get("archived") or not t.get("iterations"):
+            continue
+        t["status"] = "active"
+        t.pop("sealed_at", None)
+        it = t["iterations"][-1]
+        it["status"] = "active"
+        it.pop("ended_at", None)
+        p.write_text(json.dumps(t, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return 1
+    return 0
 
 
 def free_port():
@@ -1310,6 +1344,24 @@ def run(ctx: Ctx):
     backups = list((ctx.root / ".zcode" / "backups").glob(f"task-delete-{tid}-*"))
     ctx.check("删除前写了一份删除清单", bool(backups), str(backups)[:120])
 
+    print("R21 自动链：只接可开工的下一层")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "runtime_chain", ctx.root / "platform" / "tools" / "runtime.py")
+    rt = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rt)
+    rtw = rt.wf.WF(ctx.root)
+    parent = "PKG-L7-cvfpu-cast-overflow-experiment"
+    child = "PKG-L8-cvfpu-cast-overflow-conclusion"
+    old_status = ctx.env(child)["lifecycle"]["status"]
+    ctx.edit_env(child, lambda e: e["lifecycle"].__setitem__("status", "invalidated"))
+    ctx.check("下一层已作废：自动链停住，不派死包",
+              rt._next_package(rtw, parent) is None)
+    ctx.edit_env(child, lambda e: e["lifecycle"].__setitem__("status", "draft"))
+    ctx.check("下一层可开工：自动链才指向它",
+              rt._next_package(rtw, parent) == child)
+    ctx.edit_env(child, lambda e: e["lifecycle"].__setitem__("status", old_status))
+
     print("R9 引擎自检")
     rc, out = ctx.wf("selftest")
     ctx.check("wf selftest 全部符合预期", rc == 0 and "15/15" in out, out.splitlines()[-1][:60] if out else "无输出")
@@ -1327,6 +1379,9 @@ def main():
             print(f"（沙箱夹具：去掉了真实 store 里 {stripped} 个重做包，恢复重做前基线）")
         restored = restore_invalidated_fixture(sandbox)
         print(f"（沙箱夹具：已把 {restored} 个作废层包恢复到作废前状态，供回归使用）")
+        live_restored = restore_live_task_fixture(sandbox)
+        if live_restored:
+            print("（沙箱夹具：真实任务已封板，已把一个历史任务恢复为进行中，供回归使用）")
         port = free_port()
         # 运行时的假模型：只在本机回环，避免回归依赖外部 API
         fake = ThreadingHTTPServer(("127.0.0.1", 0), FakeModel)

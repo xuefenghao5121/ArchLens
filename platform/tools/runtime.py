@@ -5,7 +5,7 @@
 平台不再把层内工作交给外部对话：
   - agent 定义来自 platform/agents/<层>/agent.md（每次派发重新读，按 mtime 缓存由 wf 负责）
   - 平台自己调 OpenAI 兼容接口，自己执行工具（bash / 读写文件 / 列目录）
-  - 跑完由平台调 `wf gate` 核对；通过后可自动派下一层（遇到待人决定就停）
+  - 跑完由平台调 `wf gate` 核对；通过后可自动派下一层可开工的包（无包 / 已作废 / 已通过 / 待人决定就停）
   - 每个作业写 platform/runtime/jobs/<JOB>.json + .jsonl 日志
 
 配置：platform/runtime/config.json（不进库；api_key 可写在这里或放环境变量 RUNTIME_API_KEY）：
@@ -425,6 +425,16 @@ def _gate(w, pkg):
     return verdict, report
 
 
+def _chain_dispatchable(env):
+    """自动链只接“可以开工”的下一层包。
+
+    作废/被取代的包不能在死包上继续跑；已通过或待人决定的包也不该被自动重跑：
+    前者已经收口，后者必须等人签字，自动派发会绕过人的决定。
+    """
+    status = (env.get("lifecycle") or {}).get("status", "")
+    return status not in wf.BAD_LIFECYCLE and status not in ("passed", "needs_decision")
+
+
 def _next_package(w, pkg):
     env = _pkg(w, pkg)
     task, it = w.iteration_of(env)
@@ -434,8 +444,10 @@ def _next_package(w, pkg):
     for i, nd in enumerate(nodes):
         ids = [e["identity"]["package_id"] for e in nd["own"] + nd["reused"]]
         if pkg in ids and i + 1 < len(nodes):
-            own = [e["identity"]["package_id"] for e in nodes[i + 1]["own"]]
-            return own[0] if own else None
+            for nxt in nodes[i + 1]["own"]:
+                if _chain_dispatchable(nxt):
+                    return nxt["identity"]["package_id"]
+            return None
     return None
 
 
@@ -512,7 +524,7 @@ class JobManager:
                 if result == "stopped":
                     job["status"] = "stopped"
                     break
-                if job.get("layer") in ("L2", "L3"):
+                if job.get("layer") in ("L2", "L3", "L4", "L5", "L6", "L7", "L8"):
                     try:
                         lr = wf.ensure_layer_report(wf.WF(wf.default_root()), current,
                                                     by=job.get("agent", "") or "平台运行时")
@@ -551,7 +563,16 @@ class JobManager:
                 nxt = _next_package(wf.WF(wf.default_root()), current)
                 if not nxt:
                     job["status"] = "passed"
-                    _log(job, "chain_end", package_id=current, reason="没有下一个有包的框")
+                    _log(job, "chain_end", package_id=current,
+                         reason="下一层没有可自动派发的包（无包、已作废、已通过或待人决定）")
+                    break
+                nxt_env = _pkg(wf.WF(wf.default_root()), nxt)
+                if not _chain_dispatchable(nxt_env):
+                    # 防止检查后状态又变：链式跳转前再核实一次，绝不在作废/待签/已收口包上开工。
+                    job["status"] = "passed"
+                    _log(job, "chain_end", package_id=current,
+                         reason=f"下一层 {nxt} 状态为 "
+                                f"{(nxt_env.get('lifecycle') or {}).get('status', '未知')}，不自动派发")
                     break
                 _log(job, "chain_next", from_package=current, to_package=nxt)
                 current = nxt
@@ -622,7 +643,8 @@ def main():
     sub.add_parser("jobs", help="列最近的作业")
     run = sub.add_parser("run", help="派一个层包并等待作业结束")
     run.add_argument("--pkg", required=True)
-    run.add_argument("--auto", action="store_true", help="核对通过后自动派下一个有包的框")
+    run.add_argument("--auto", action="store_true",
+                     help="核对通过后自动派下一个可开工的框（无包/作废/已通过/待人决定就停）")
     run.add_argument("--agent", default="", help="执行者署名（默认用 agent 定义名）")
     run.add_argument("--by", default="", help="发起人")
     args = ap.parse_args()

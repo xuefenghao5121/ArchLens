@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import type { GateReport, JobEvent, JobInfo, LayerCard, Receipt, StateWord } from '../../types'
 import { FRAME_LABEL, LAYER_NAME, TRUTH_LABEL, fmtTime, receiptAction } from '../../status'
-import { GIVE_KIND_LABEL, GiveRow, artifactPurpose, giveKind, verdictWord } from '../shared/Give'
+import { GIVE_KIND_LABEL, GiveRow, artifactPurpose, giveKind, pkgShort, verdictWord } from '../shared/Give'
 import { actionError, useAction } from '../shared/useAction'
 import { ActionNotice, PageErr, PageLoad, StateChip } from '../shared/ui'
 import { flowHref, layerHref, useWork } from '../tasks/useWork'
@@ -533,7 +533,8 @@ function Detail({ pkg }: { pkg: string }) {
     const resp = await run({ action: 'layer_report', pkg, agent: agent.trim() })
     if (!resp.ok) return setNotice({ kind: 'err', title: actionError(resp) })
     const path = String(resp.result?.path ?? '')
-    setNotice({ kind: 'ok', title: `已生成 L2 归因报告${path ? `：${path}` : ''}` })
+    const contract = String(resp.result?.contract_path ?? '')
+    setNotice({ kind: 'ok', title: `已生成 L${c.layer.slice(1)} ${reportLabel}${path ? `：${path}` : ''}${contract ? `；契约文件：${contract}` : ''}` })
   }
 
   const onPropose = async () => {
@@ -605,6 +606,19 @@ function Detail({ pkg }: { pkg: string }) {
     }
     return order.filter((k) => m.has(k)).map((k) => m.get(k)!)
   })()
+  const REPORT_META: Record<string, { label: string; file: string }> = {
+    L2: { label: '归因报告', file: 'L2-attribution-report' },
+    L3: { label: '方案报告', file: 'L3-solution-report' },
+    L4: { label: '契约交付', file: 'L4-contract-report' },
+    L5: { label: 'RTL 报告', file: 'L5-rtl-report' },
+    L6: { label: '集成报告', file: 'L6-integration-report' },
+    L7: { label: '实验报告', file: 'L7-experiment-report' },
+    L8: { label: '结论报告', file: 'L8-conclusion-report' },
+  }
+  const reportMeta = REPORT_META[c.layer]
+  const reportLabel = reportMeta?.label ?? '交付报告'
+  const reportFile = reportMeta?.file ?? ''
+  const isContractLayer = c.layer === 'L4'
   const pendingCount = c.receipts.filter((r) => r.pending).length
   const applicableChecks = c.checks.filter((ch) => ch.ok !== null)
   const passedChecks = applicableChecks.filter((ch) => ch.ok).length
@@ -621,6 +635,28 @@ function Detail({ pkg }: { pkg: string }) {
   const otherTests = tests.filter((t) => !citedTests.includes(t))
   const uncitedArts = arts.filter((a) => !citedIds.has(a.id))
   const raw = data.raw
+  const isHumanDelivery = (a: typeof arts[number]) =>
+    a.role === 'layer-report' || a.artifact_type === 'report' || /\.md$/i.test(a.path || '')
+  const isMachineDelivery = (a: typeof arts[number]) =>
+    a.role === 'layer-contract' || a.role === 'layer-delivery-machine'
+    || (a.artifact_type === 'manifest' && /(contract_manifest|-delivery\.json)/i.test(a.path || ''))
+  const humanArts = arts.filter(isHumanDelivery)
+  const machineArts = arts.filter(isMachineDelivery)
+  const evidenceArts = arts.filter((a) => !isHumanDelivery(a) && !isMachineDelivery(a))
+  const artifactRows = (items: typeof arts) => items.map((e) => (
+    <div className="artifact-row" key={e.id}>
+      <button type="button" className="artifact-open" onClick={() => setArtifactOpen(e.id)}
+        title="在工作台打开、审核或编辑">
+        <span className="mono artifact-path">{e.path || e.id}</span>
+        <span className="artifact-open-word">打开/审核</span>
+      </button>
+      <span className="muted small">
+        {artifactPurpose(e.artifact_type, e.path)} · {e.artifact_type}
+        {e.hash ? ` · ${e.hash.slice(0, 12)}` : ''}
+        {e.for_test?.length ? ` · 支撑测试 ${e.for_test.join('、')}` : e.cited === false ? ' · 未被结论引用' : ''}
+      </span>
+    </div>
+  ))
 
   return (
     <div className="ld">
@@ -734,7 +770,7 @@ function Detail({ pkg }: { pkg: string }) {
             <span className="muted small">引擎 {runtime.config.engine === 'langgraph' ? 'langgraph（L1–L8 领域工具）' : 'v1'}</span>
             <label className="cfg-inline">
               <input type="checkbox" checked={autoDispatch} onChange={(e) => setAutoDispatch(e.target.checked)} />
-              核对通过后自动派下一个有包的框（遇到待人决定就停）
+              核对通过后自动派下一个可开工的框（无包 / 已作废 / 已通过 / 待人决定就停）
             </label>
             <button className="tf-btn primary mini" disabled={busy || (!!job && !JOB_TERMINAL.has(job.status))} onClick={onDispatch}
               title="开工前只检查包、上游与运行时；核对是 agent 收工后的检查，缺交付由 agent 补">
@@ -865,12 +901,10 @@ function Detail({ pkg }: { pkg: string }) {
             <strong>交付</strong>
             <span className="note">这一层交出的文件、结论，以及给下一层的输入</span>
             {iface.derived && <span className="note">没有接口卡：从原有字段摘录，每条注明摘自哪里</span>}
-            {(c.layer === 'L2' || c.layer === 'L3') && (
+            {reportMeta && (
               <button className="tf-btn mini" disabled={busy} onClick={onReport} style={{ marginLeft: 'auto' }}>
-                {arts.some((a) => a.artifact_type === 'report'
-                  && a.path?.includes(c.layer === 'L3' ? 'L3-solution-report' : 'L2-attribution-report'))
-                  ? (c.layer === 'L3' ? '重新生成方案报告' : '重新生成归因报告')
-                  : (c.layer === 'L3' ? '生成方案报告' : '生成归因报告')}
+                {arts.some((a) => a.artifact_type === 'report' && a.path?.includes(reportFile))
+                  ? `重新生成${reportLabel}` : `生成${reportLabel}`}
               </button>
             )}
           </div>
@@ -879,26 +913,20 @@ function Detail({ pkg }: { pkg: string }) {
           <div className="qa">{g.produces || '（未定义）'}</div>
           <div className="cfg-meta">交付项：{g.deliverables.join(' / ') || '—'}</div>
 
-          <div className="block-k">
-            登记文件（证据/输入）
-            <span className="note">L2/L3/L4 的交付是 payload 与接口卡；文件只是本包登记的证据或输入</span>
-          </div>
-          {arts.length > 0
-            ? arts.map((e) => (
-                <div className="artifact-row" key={e.id}>
-                  <button type="button" className="artifact-open" onClick={() => setArtifactOpen(e.id)}
-                    title="在工作台打开、审核或编辑">
-                    <span className="mono artifact-path">{e.path || e.id}</span>
-                    <span className="artifact-open-word">打开/审核</span>
-                  </button>
-                  <span className="muted small">
-                    {artifactPurpose(e.artifact_type, e.path)} · {e.artifact_type}
-                    {e.hash ? ` · ${e.hash.slice(0, 12)}` : ''}
-                    {e.for_test?.length ? ` · 支撑测试 ${e.for_test.join('、')}` : e.cited === false ? ' · 未被结论引用' : ''}
-                  </span>
-                </div>
-              ))
-            : <div className="muted small">还没有登记交付文件。</div>}
+          <div className="block-k">人读交付</div>
+          <div className="artifact-note">交付件两面：这里是人读报告；机器可读 JSON 收在下面，给人看的默认是人读面。</div>
+          {humanArts.length ? artifactRows(humanArts) : <div className="muted small">还没有人读交付。</div>}
+
+          <div className="block-k">机器可读（给 agent）</div>
+          {machineArts.length ? (
+            <details className="machine-delivery">
+              <summary>agent JSON / 契约文件（{machineArts.length}）</summary>
+              {artifactRows(machineArts)}
+            </details>
+          ) : <div className="muted small">还没有机器可读交付。</div>}
+
+          <div className="block-k">证据/输入文件</div>
+          {evidenceArts.length ? artifactRows(evidenceArts) : <div className="muted small">没有额外证据/输入文件。</div>}
 
           <div className="block-k">
             交给下游的结论
@@ -970,21 +998,37 @@ function Detail({ pkg }: { pkg: string }) {
         {/* 证据：只回答一件事——每条结论有没有登记在册的依据 */}
         <section className="block ld-ev">
           <div className="block-title">
-            <strong>证据</strong><span className="note">结论 → 依据：每条结论只列它自己声明的依据</span>
+            <strong>证据</strong>
+            <span className="note">{isContractLayer ? '契约层的依据：上游 takes + 契约文件；不要求 ART/RES 测试' : '结论 → 依据：每条结论只列它自己声明的依据'}</span>
           </div>
           <div className="ev-why">
-            不同结论下面挂不同 ART，是接口卡里每条 S 的 evidence 列表不同：S1 用“负载/激励”依据，
-            S3 用“基线源 + 激励”依据，并不表示同一个工件能证明所有结论。平台只核对“引用已登记、哈希一致”，
-            因果关系由结论文字和依据类型表达；如果某条依据不该出现，改接口卡。
+            {isContractLayer
+              ? 'L4 是 RTL 设计契约层：S1–S4 的依据是接口卡 takes 引用的上游结论，以及 contract_manifest 契约文件；本层不要求登记 ART/RES 测试。因此“登记证据 0 条”不等于没有依据。'
+              : '不同结论下面挂不同 ART，是接口卡里每条 S 的 evidence 列表不同：S1 用“负载/激励”依据，S3 用“基线源 + 激励”依据，并不表示同一个工件能证明所有结论。平台只核对“引用已登记、哈希一致”，因果关系由结论文字和依据类型表达；如果某条依据不该出现，改接口卡。'}
           </div>
           {gives.length === 0 && <div className="muted small">还没有结论，因此没有可核对的依据。</div>}
           {gives.length > 0 && (
             <div className="ev-summary">
-              结论依据：{withEvidence.length}/{gives.length} 条有登记依据
+              {isContractLayer
+                ? `登记证据：${withEvidence.length}/${gives.length} 条 · 上游依据：${takes.length} 条 · 契约工件：${machineArts.length} 个`
+                : `结论依据：${withEvidence.length}/${gives.length} 条有登记依据`}
             </div>
           )}
-          {withoutEvidence.length > 0 && (
+          {isContractLayer && takes.length > 0 && (
+            <div className="ev-takes">
+              <div className="block-k" style={{ marginTop: 6 }}>契约依据（上游结论）</div>
+              {takes.map((t, i) => (
+                <div key={`${t.from}-${i}`} className="ev-line">
+                  <Link to={layerHref(t.from)}>{t.from}</Link>：{t.statement}
+                </div>
+              ))}
+            </div>
+          )}
+          {withoutEvidence.length > 0 && !isContractLayer && (
             <div className="ev-missing">没有写依据：{withoutEvidence.map((g) => g.id).join('、')}</div>
+          )}
+          {isContractLayer && withoutEvidence.length > 0 && (
+            <div className="muted small">S1–S4 未挂 ART/RES；契约层允许，依据见上面的 takes。</div>
           )}
           {gives.map((give, i) => {
             if ((give.evidence ?? []).length === 0) return null
@@ -1000,6 +1044,7 @@ function Detail({ pkg }: { pkg: string }) {
                 if (e.kind === 'test') {
                   return (
                     <div className="ev-line" key={id}>
+                      {e.package_ref ? `来自 ${pkgShort(e.package_ref)} · ` : ''}
                       测试「{e.title}」：{verdictWord(e.verdict)}（{e.strength ?? '—'}）
                       {e.for_statement && e.for_statement.length > 0 ? ` · 支撑 ${e.for_statement.join('、')}` : ''}
                     </div>

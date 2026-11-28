@@ -676,6 +676,11 @@ def _h_validate(w, wfmod, p):
     if verdict in ("pass", "needs_decision") or _has_stale_signoff(w, wfmod, ref):
         # 手动点“核对”也要维护待签队列：内容改过后换掉旧待签；已经通过则清掉遗留的当前待签。
         signoff = wfmod.ensure_signoff_pending(w, ref, by=_agent(p) or "平台")
+    # 人读/机器交付也跟着当前核对结果刷新；失败也刷新，页面不会显示旧状态。
+    try:
+        wfmod.ensure_layer_report(w, ref, by=_agent(p) or "平台")
+    except (SystemExit, AttributeError):
+        pass
     return {"package_id": ref, "verdict": verdict, "report": report,
             "signoff_decision_id": signoff}
 

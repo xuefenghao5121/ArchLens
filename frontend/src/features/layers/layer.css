@@ -149,3 +149,7 @@
 .give-group > summary { cursor: pointer; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; font-size: 12px; padding: 3px 0; user-select: none; }
 .give-group-kind { font-weight: 600; color: var(--text); }
 .give-group-ids { color: var(--muted); font-family: var(--font-mono); font-size: 11px; }
+.artifact-note { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 2px 0 4px; }
+.machine-delivery { margin: 2px 0 4px; }
+.machine-delivery > summary { cursor: pointer; font-size: 12px; color: var(--muted); padding: 3px 0; }
+.ev-takes { border-left: 2px solid var(--line); padding-left: 8px; margin: 4px 0; }
